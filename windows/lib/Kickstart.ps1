@@ -31,21 +31,87 @@ function New-LinuxPasswordHash {
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password))
     try {
-        # -stdin keeps the password off the process command line, which any
-        # other process on the machine can read.
-        if (Get-Command openssl -ErrorAction SilentlyContinue) {
-            $hash = ($plain | & openssl passwd -6 -stdin) -join ''
-            if ($hash) { return $hash.Trim() }
+        if ($plain -match "[`r`n]") {
+            throw 'The password contains a carriage return or newline, which cannot be hashed reliably.'
         }
-        if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
-            $hash = ($plain | & wsl.exe -e openssl passwd -6 -stdin 2>$null) -join ''
-            if ($LASTEXITCODE -eq 0 -and $hash) { return $hash.Trim() }
+
+        $hash = Invoke-OpensslPasswd -Plain $plain
+        if (-not $hash) {
+            throw 'No openssl found (tried PATH and wsl.exe). Generate the hash yourself with: openssl passwd -6'
         }
-        throw 'No openssl found (tried PATH and wsl.exe). Generate the hash yourself with: openssl passwd -6'
+
+        # Verify the hash actually matches what was typed. Re-hashing with the
+        # salt from the result must reproduce it exactly. This is not
+        # ceremony: the previous implementation piped the password into
+        # openssl, and PowerShell appends a newline to native-command stdin,
+        # so what got hashed was "password`r" -- producing a hash nobody could
+        # ever log in with, discovered only after a full unattended install.
+        $parts = $hash -split '\$'
+        if ($parts.Count -lt 4) { throw "openssl returned something that is not SHA-512 crypt: $hash" }
+        $salt = $parts[2]
+        $again = Invoke-OpensslPasswd -Plain $plain -Salt $salt
+        if ($again -ne $hash) {
+            throw "Hash did not verify (got two different results for the same password). Refusing to write a password nobody can use."
+        }
+
+        $hash
     } finally {
         $plain = $null
         [GC]::Collect()
     }
+}
+
+<#
+Runs `openssl passwd -6` with the password on stdin and NO trailing newline.
+
+The newline is the whole reason this is not a one-liner. PowerShell's pipeline
+terminates each object with [Environment]::NewLine when feeding a native
+command, so `$plain | openssl passwd -6 -stdin` hashes the password plus a
+carriage return. Writing to the process's stdin directly and closing it is the
+only way to be sure of what was hashed.
+#>
+function Invoke-OpensslPasswd {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Plain,
+        [string]$Salt
+    )
+
+    $args = @('passwd', '-6')
+    if ($Salt) { $args += @('-salt', $Salt) }
+    $args += '-stdin'
+
+    $candidates = @()
+    if (Get-Command openssl -ErrorAction SilentlyContinue) {
+        $candidates += , @{ File = 'openssl'; Args = $args }
+    }
+    if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+        $candidates += , @{ File = 'wsl.exe'; Args = @('-e', 'openssl') + $args }
+    }
+
+    foreach ($c in $candidates) {
+        try {
+            $psi = [Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $c.File
+            foreach ($a in $c.Args) { $psi.ArgumentList.Add($a) }
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+
+            $proc = [Diagnostics.Process]::Start($psi)
+            # Write, do not WriteLine: no newline is the entire point.
+            $proc.StandardInput.Write($Plain)
+            $proc.StandardInput.Close()
+            $out = $proc.StandardOutput.ReadToEnd()
+            $proc.WaitForExit()
+            if ($proc.ExitCode -eq 0 -and $out.Trim()) { return $out.Trim() }
+        } catch {
+            continue
+        }
+    }
+    $null
 }
 
 <#
@@ -266,6 +332,17 @@ function Update-KickstartDisk {
             $lines.Add('# sshd is how the machine is reachable without using the console at all.')
             $lines.Add('dnf install -y hyperv-daemons openssh-server git')
             $lines.Add('systemctl enable hypervkvpd.service hypervvssd.service sshd.service')
+            $lines.Add('')
+            $lines.Add("# Kickstart's sshkey writes authorized_keys but does not always label it")
+            $lines.Add('# for SELinux. sshd then reads a file it is not allowed to read, and the')
+            $lines.Add('# client sees "Server accepts key" followed immediately by "Permission')
+            $lines.Add('# denied" -- the key is present and still useless. Relabel and fix modes.')
+            $lines.Add("for h in /home/*/ /root/; do")
+            $lines.Add('  [ -d "$h/.ssh" ] || continue')
+            $lines.Add('  chmod 700 "$h/.ssh"')
+            $lines.Add('  chmod 600 "$h/.ssh/authorized_keys" 2>/dev/null || true')
+            $lines.Add('  restorecon -R -F "$h/.ssh" 2>/dev/null || true')
+            $lines.Add('done')
             $lines.Add('%end')
         }
 
