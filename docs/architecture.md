@@ -147,3 +147,36 @@ costs no downtime. It also stops a stray installer boot from running
 `clearpart --all` a second time.
 
 Still, use a password you would be content to have attacked at 5000 rounds.
+
+## Why the kickstart refuses to reinstall
+
+An unattended install is a machine that partitions a disk with nobody
+watching, and the media that tells it to do so outlives the install. It stays
+attached. Anything that boots the installer again -- a changed boot order, a
+stray firmware menu, a colleague pressing a key -- would find `clearpart --all`
+and silently reinstall a working machine. That happened here once already.
+
+Cleaning the media up afterwards helps, but it is a step that can be forgotten
+or interrupted, and a safety property that depends on remembering something is
+not a safety property. So the refusal lives in the kickstart itself.
+
+The destructive commands are not written into the file at all. In their place
+is `%include /tmp/linux-on-hyperv-partitioning`, and a `%pre` script decides
+whether that file ever exists: it walks `/sys/block`, skips optical, loopback
+and ram devices (the installer ISO and the kickstart disc are among them), and
+asks `blkid` whether any real disk already carries a btrfs, ext, xfs, swap, LVM
+or LUKS signature. If one does, it prints what it found and exits non-zero.
+Under `--erroronfail` that stops Anaconda before it touches a partition table.
+Anaconda runs `%pre` before resolving `%include`, which is what makes this
+work.
+
+`-AllowReinstall` writes `clearpart`/`autopart` inline and skips the guard --
+for when wiping an installed machine is the actual intent.
+
+The same reasoning applies to knowing when an install has finished. A reported
+KVP address is not proof: Fedora's installer environment reports one too, so
+treating it as completion can eject the kickstart media mid-install.
+`Wait-LinuxInstall` waits for **sshd** instead, which the `%post` installs and
+enables and which therefore cannot answer until the installed system has
+booted. Without the guest tools there is no sshd coming, and `-AddressIsEnough`
+falls back to the weaker signal deliberately rather than by accident.

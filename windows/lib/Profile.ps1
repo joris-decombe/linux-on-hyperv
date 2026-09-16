@@ -383,7 +383,11 @@ function Invoke-LinuxProfile {
         # Blocks until the installed system reports an address, then ejects and
         # deletes the kickstart media. Without this the media -- and the
         # password hash on it -- stays attached forever.
-        $address = Wait-LinuxInstall -VMName $p.vm.name
+        $waitArgs = @{ VMName = $p.vm.name }
+        # Without the guest tools there is no sshd to wait for, so fall back to
+        # the weaker address-only signal rather than timing out for an hour.
+        if (-not $p.install.installGuestTools) { $waitArgs.AddressIsEnough = $true }
+        $address = Wait-LinuxInstall @waitArgs
         if ($address) { Write-Ok "Guest is at $address" }
     } elseif ($p.install.unattended) {
         Write-Warn 'Kickstart media left attached (-NoWait).'

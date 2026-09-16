@@ -173,6 +173,10 @@ function New-KickstartContent {
         # openssh-server plus the Hyper-V integration daemons, so the guest is
         # reachable and reports its address without anyone touching the console.
         [switch]$InstallGuestTools,
+        # Permit wiping a disk that already carries a filesystem. Off by
+        # default: unattended media that reinstalls whatever it is booted
+        # against is a loaded gun, and the media outlives the install.
+        [switch]$AllowReinstall,
         # The installer's own encryption is off by default: a LUKS passphrase
         # must be typed at the console on every boot, before any network
         # exists, which defeats the point of an unattended machine.
@@ -197,11 +201,20 @@ function New-KickstartContent {
     # fewer credential to look after.
     $ks.Add('rootpw --lock')
     $ks.Add("user --name=$UserName --gecos=`"$FullName`" --groups=wheel --iscrypted --password=$PasswordHash")
-    $ks.Add('clearpart --all --initlabel')
     if ($EncryptDisk) {
-        $ks.Add("autopart --type=btrfs --encrypted --passphrase=$EncryptionPassphrase")
+        $partitioning = "clearpart --all --initlabel`nautopart --type=btrfs --encrypted --passphrase=$EncryptionPassphrase"
     } else {
-        $ks.Add('autopart --type=btrfs')
+        $partitioning = "clearpart --all --initlabel`nautopart --type=btrfs"
+    }
+
+    if ($AllowReinstall) {
+        foreach ($line in $partitioning -split "`n") { $ks.Add($line) }
+    } else {
+        # The destructive commands are not written here at all. A %pre script
+        # decides whether to emit them, and refuses if the machine already has
+        # a filesystem. Anaconda runs %pre before resolving %include, which is
+        # the documented way to make partitioning conditional.
+        $ks.Add('%include /tmp/linux-on-hyperv-partitioning')
     }
     $ks.Add('bootloader --location=mbr')
     if (-not $Live) {
@@ -215,6 +228,41 @@ function New-KickstartContent {
         $ks.Add("sshkey --username=$UserName `"$AuthorizedKey`"")
     }
     $ks.Add('reboot')
+
+    if (-not $AllowReinstall) {
+        $ks.Add('')
+        $ks.Add('%pre --erroronfail --log=/tmp/ks-pre.log')
+        $ks.Add('# Refuse to wipe a machine that already has an operating system.')
+        $ks.Add('#')
+        $ks.Add('# This media carries clearpart --all. It outlives the install it was')
+        $ks.Add('# built for -- it stays attached, and anything that boots the installer')
+        $ks.Add('# again would silently reinstall the machine. Rather than rely on')
+        $ks.Add('# remembering to detach it, refuse here: exiting non-zero under')
+        $ks.Add('# --erroronfail stops Anaconda before it touches a partition table.')
+        $ks.Add('found=""')
+        $ks.Add('for dev in /sys/block/*; do')
+        $ks.Add('  name=$(basename "$dev")')
+        $ks.Add('  # Optical, loopback and ramdisks are not install targets; the')
+        $ks.Add('  # installer ISO and this kickstart disc are among them.')
+        $ks.Add('  case "$name" in sr*|loop*|ram*|fd*|dm-*) continue ;; esac')
+        $ks.Add('  if blkid "/dev/$name"* 2>/dev/null | grep -qE ''TYPE="(btrfs|ext[234]|xfs|swap|LVM2_member|crypto_LUKS)"''; then')
+        $ks.Add('    found="$found $name"')
+        $ks.Add('  fi')
+        $ks.Add('done')
+        $ks.Add('')
+        $ks.Add('if [ -n "$found" ]; then')
+        $ks.Add('  echo "REFUSING TO INSTALL:$found already carries a filesystem." >&2')
+        $ks.Add('  echo "This kickstart would run clearpart --all and destroy it." >&2')
+        $ks.Add('  echo "If that is what you want, rebuild the media with -AllowReinstall." >&2')
+        $ks.Add('  exit 1')
+        $ks.Add('fi')
+        $ks.Add('')
+        $ks.Add('# Empty disks: emit the destructive commands for %include to pick up.')
+        $ks.Add('cat > /tmp/linux-on-hyperv-partitioning <<''PARTITIONING''')
+        foreach ($line in $partitioning -split "`n") { $ks.Add($line) }
+        $ks.Add('PARTITIONING')
+        $ks.Add('%end')
+    }
 
     if (-not $Live -and $PackageEnvironment) {
         $ks.Add('')
@@ -254,8 +302,8 @@ function Get-KickstartContentArgs {
     $keep = @(
         'UserName', 'PasswordHash', 'FullName', 'Hostname', 'Timezone',
         'KeyboardLayout', 'Locale', 'AuthorizedKey', 'PackageEnvironment',
-        'ReleaseVersion', 'Live', 'InstallGuestTools', 'EncryptDisk',
-        'EncryptionPassphrase'
+        'ReleaseVersion', 'Live', 'InstallGuestTools', 'AllowReinstall',
+        'EncryptDisk', 'EncryptionPassphrase'
     )
     $out = @{}
     foreach ($k in $keep) {
@@ -293,6 +341,7 @@ function New-KickstartIso {
         [string]$ReleaseVersion = '44',
         [switch]$Live,
         [switch]$InstallGuestTools,
+        [switch]$AllowReinstall,
         [switch]$EncryptDisk,
         [string]$EncryptionPassphrase,
         [switch]$Force
@@ -407,6 +456,7 @@ function New-KickstartDisk {
         [string]$ReleaseVersion = '44',
         [switch]$Live,
         [switch]$InstallGuestTools,
+        [switch]$AllowReinstall,
         [switch]$EncryptDisk,
         [string]$EncryptionPassphrase,
         [switch]$Force
@@ -672,37 +722,60 @@ function Wait-LinuxInstall {
         [Parameter(Mandatory)][string]$VMName,
         [int]$TimeoutMinutes = 60,
         # Leave the media in place; just wait.
-        [switch]$NoCleanUp
+        [switch]$NoCleanUp,
+        # Accept a reported address on its own as "finished". Only correct when
+        # the media was built without -InstallGuestTools, since then no sshd is
+        # coming and there is nothing stronger to wait for.
+        [switch]$AddressIsEnough
     )
 
     Write-Step "Waiting for '$VMName' to finish installing"
-    Write-Note 'Signal: the guest reporting an address over KVP, which only the installed system does.'
+
+    # The signal matters more than the wait. A reported KVP address alone is
+    # NOT proof the install finished -- Fedora's installer environment reports
+    # one too, so acting on it can eject the kickstart mid-install. Port 22 is
+    # the stronger signal: the %post installs and enables sshd, so nothing is
+    # listening until the installed system has booted.
+    if ($AddressIsEnough) {
+        Write-Note 'Signal: a reported address (weak -- the installer reports one too).'
+    } else {
+        Write-Note 'Signal: sshd reachable, which only the installed system provides.'
+    }
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $address = $null
     while ((Get-Date) -lt $deadline) {
         $vm = Get-VM -Name $VMName -ErrorAction Stop
         if ($vm.State -eq 'Off') {
-            # The kickstart says `reboot`, so an off VM means it halted instead.
-            Write-Warn "VM is off. If the install finished it should have rebooted; check the console."
+            Write-Warn 'VM is off. The kickstart says reboot, so check the console for a failure.'
             return
         }
+
         $address = @(Get-VMNetworkAdapter -VMName $VMName |
                 Select-Object -ExpandProperty IPAddresses |
                 Where-Object { $_ -and $_ -notmatch ':' -and $_ -ne '127.0.0.1' })[0]
-        if ($address) { break }
+
+        if ($address) {
+            if ($AddressIsEnough) { break }
+            if (Test-NetConnection -ComputerName $address -Port 22 -WarningAction SilentlyContinue -InformationLevel Quiet) {
+                break
+            }
+            # An address but no sshd yet: still installing.
+            $address = $null
+        }
         Start-Sleep -Seconds 15
     }
 
     if (-not $address) {
-        Write-Warn "No address after $TimeoutMinutes minutes; not cleaning up. The media is still attached."
+        Write-Warn "No completion signal after $TimeoutMinutes minutes. The media is still attached; nothing was removed."
+        Write-Note "Check the console, then:  Remove-KickstartMedia -VMName $VMName"
         return
     }
 
     Write-Ok "Installed system is up at $address"
     if ($NoCleanUp) {
         Write-Note 'Leaving the kickstart media attached (-NoCleanUp).'
-        return
+        return $address
     }
     Remove-KickstartMedia -VMName $VMName -Confirm:$false
     $address
