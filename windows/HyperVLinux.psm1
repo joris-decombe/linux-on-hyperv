@@ -13,6 +13,7 @@ Export-ModuleMember -Function @(
     'New-KickstartIso'
     'New-KickstartContent'
     'Add-KickstartMedia'
+    'Remove-KickstartMedia'
     'New-LinuxPasswordHash'
     'Add-KickstartDisk'
     'Update-KickstartDisk'

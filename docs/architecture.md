@@ -111,3 +111,34 @@ squashfs payload and ignores `%packages`; a netinst has no payload at all and
 needs both an install source (`url --mirrorlist=...`) and a package
 environment. `New-KickstartDisk -Live` omits both; otherwise it emits them, and
 the desktop named in the profile chooses the environment group.
+
+## Where the password goes
+
+Worth stating exactly, because "it's hashed" is not on its own an answer.
+
+**In memory.** The password is read as a `SecureString`, then converted to a
+**byte array** -- deliberately not a .NET string. A managed string is immutable
+and cannot be erased: assigning `$null` drops a reference and leaves the
+plaintext in the heap until collection, from where it can reach a pagefile, a
+hibernation file or a crash dump. The byte array is zeroed in a `finally`, and
+the unmanaged BSTR is released with `ZeroFreeBSTR`, which wipes before freeing
+where `FreeBSTR` would leave the plaintext in freed memory.
+
+**In transit.** The bytes are written to openssl's **stdin**, never to a command
+line, so the password never appears in `Win32_Process` or `ps`. When openssl
+comes from `wsl.exe` rather than the host PATH, the plaintext does cross into
+the WSL VM -- still not on a command line, but through a second OS.
+
+**At rest.** Only the SHA-512 crypt hash is written; the plaintext never
+reaches disk. The hash lands in three places: the kickstart media, whose ACL is
+inherited from the Hyper-V disk directory and covers Administrators, Hyper-V
+Administrators, SYSTEM and the VM's own SID but *not* `Users`; the guest's
+`/root/anaconda-ks.cfg`, which is root-only; and the guest's `/etc/shadow`,
+which is where it belongs.
+
+**The remaining weakness is the hash itself.** `openssl passwd -6` uses 5000
+rounds, which is cheap to attack offline by anyone who can read the media. So
+`Remove-KickstartMedia` detaches and deletes it once the install is done --
+which also stops a stray installer boot from running `clearpart --all` again.
+Use a password you would be content to have attacked at 5000 rounds, or run
+`Remove-KickstartMedia` promptly, or both.

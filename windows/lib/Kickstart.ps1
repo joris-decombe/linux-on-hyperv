@@ -38,14 +38,29 @@ function New-LinuxPasswordHash {
 
     if (-not $Password) { $Password = Read-Host -AsSecureString 'Password for the new Linux user' }
 
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password))
+    # The plaintext is kept as a byte array rather than a .NET string. A
+    # managed string is immutable and cannot be erased -- setting the variable
+    # to $null only drops a reference, leaving the password in the heap until
+    # the GC gets to it, from where it can reach a pagefile, a hibernation file
+    # or a crash dump. A byte array can be zeroed, and is.
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+    $bytes = $null
     try {
-        if ($plain -match "[`r`n]") {
-            throw 'The password contains a carriage return or newline, which cannot be hashed reliably.'
+        $length = [Runtime.InteropServices.Marshal]::ReadInt32($bstr, -4)   # BSTR length prefix, in bytes
+        $chars = [char[]]::new($length / 2)
+        [Runtime.InteropServices.Marshal]::Copy($bstr, $chars, 0, $chars.Length)
+        try {
+            foreach ($c in $chars) {
+                if ($c -eq "`r" -or $c -eq "`n") {
+                    throw 'The password contains a carriage return or newline, which cannot be hashed reliably.'
+                }
+            }
+            $bytes = [Text.Encoding]::UTF8.GetBytes($chars)
+        } finally {
+            [Array]::Clear($chars, 0, $chars.Length)
         }
 
-        $hash = Invoke-OpensslPasswd -Plain $plain
+        $hash = Invoke-OpensslPasswd -PlainBytes $bytes
         if (-not $hash) {
             throw 'No openssl found (tried PATH and wsl.exe). Generate the hash yourself with: openssl passwd -6'
         }
@@ -54,19 +69,22 @@ function New-LinuxPasswordHash {
         # salt from the result must reproduce it exactly. This is not ceremony:
         # an earlier implementation piped the password into openssl, and
         # PowerShell appends a newline to native-command stdin, so what got
-        # hashed was "password`r" -- a hash nobody could ever log in with,
-        # discovered only after a full unattended install had succeeded.
+        # hashed was "password" plus a carriage return -- a hash nobody could
+        # ever log in with, discovered only after a full unattended install had
+        # succeeded.
         $parts = $hash -split '\$'
         if ($parts.Count -lt 4) { throw "openssl returned something that is not SHA-512 crypt: $hash" }
-        $again = Invoke-OpensslPasswd -Plain $plain -Salt $parts[2]
+        $again = Invoke-OpensslPasswd -PlainBytes $bytes -Salt $parts[2]
         if ($again -ne $hash) {
             throw 'Hash did not verify (two different results for the same password). Refusing to write a password nobody can use.'
         }
 
         $hash
     } finally {
-        $plain = $null
-        [GC]::Collect()
+        if ($bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
+        # Frees the unmanaged copy AND zeroes it first. Marshal.FreeBSTR alone
+        # would leave the plaintext in freed memory.
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 }
 
@@ -82,7 +100,7 @@ only way to be sure of what was hashed.
 function Invoke-OpensslPasswd {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Plain,
+        [Parameter(Mandatory)][byte[]]$PlainBytes,
         [string]$Salt
     )
 
@@ -110,8 +128,11 @@ function Invoke-OpensslPasswd {
             $psi.CreateNoWindow = $true
 
             $proc = [Diagnostics.Process]::Start($psi)
-            # Write, not WriteLine: the absence of a newline is the entire point.
-            $proc.StandardInput.Write($Plain)
+            # Raw bytes, and no trailing newline: the absence of the newline is
+            # the entire point, and bytes avoid a managed string we could not
+            # erase afterwards.
+            $proc.StandardInput.BaseStream.Write($PlainBytes, 0, $PlainBytes.Length)
+            $proc.StandardInput.BaseStream.Flush()
             $proc.StandardInput.Close()
             $out = $proc.StandardOutput.ReadToEnd()
             $proc.WaitForExit()
@@ -555,5 +576,59 @@ function Update-KickstartDisk {
         }
     } finally {
         if ($mounted) { Dismount-VHD -Path $Path -ErrorAction SilentlyContinue }
+    }
+}
+
+<#
+.SYNOPSIS
+    Detach and delete a VM's kickstart media once the install is done.
+
+.DESCRIPTION
+    Worth doing for two reasons. The media carries the account's password hash,
+    and while its ACL keeps it to administrators and the VM, a SHA-512 crypt
+    hash at openssl's default 5000 rounds is cheap to attack offline by anyone
+    who can read it. And the kickstart says `clearpart --all`, so a VM that
+    ever boots the installer again with it attached reinstalls itself.
+
+    The VM must be off. Use -KeepFile to detach without deleting.
+#>
+function Remove-KickstartMedia {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Medium')]
+    param(
+        [Parameter(Mandatory)][string]$VMName,
+        [switch]$KeepFile
+    )
+
+    $vm = Get-VM -Name $VMName -ErrorAction Stop
+    if ($vm.State -ne 'Off') { throw "VM '$VMName' must be off to detach media (it is $($vm.State))." }
+
+    $found = @()
+    $found += Get-VMDvdDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' }
+    $found += Get-VMHardDiskDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' }
+
+    if (-not $found) { Write-Note 'No kickstart media attached'; return }
+
+    foreach ($media in $found) {
+        $path = $media.Path
+        if (-not $PSCmdlet.ShouldProcess($path, 'Detach kickstart media')) { continue }
+
+        if ($media -is [Microsoft.HyperV.PowerShell.DvdDrive]) {
+            Remove-VMDvdDrive -VMDvdDrive $media
+        } else {
+            Remove-VMHardDiskDrive -VMHardDiskDrive $media
+        }
+        Write-Ok "Detached $path"
+
+        if (-not $KeepFile -and (Test-Path -LiteralPath $path)) {
+            Remove-Item -LiteralPath $path -Force
+            Write-Ok "Deleted $path"
+        }
+    }
+
+    # Boot the installed system from now on, not the installer.
+    $disk = Get-VMHardDiskDrive -VM $vm | Select-Object -First 1
+    if ($disk) {
+        Set-VMFirmware -VM $vm -FirstBootDevice $disk
+        Write-Ok 'Boot order set to the system disk'
     }
 }
