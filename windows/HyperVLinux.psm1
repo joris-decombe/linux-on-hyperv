@@ -14,6 +14,7 @@ Export-ModuleMember -Function @(
     'New-KickstartContent'
     'Add-KickstartMedia'
     'Remove-KickstartMedia'
+    'Wait-LinuxInstall'
     'New-LinuxPasswordHash'
     'Add-KickstartDisk'
     'Update-KickstartDisk'

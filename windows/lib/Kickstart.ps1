@@ -600,25 +600,40 @@ function Remove-KickstartMedia {
     )
 
     $vm = Get-VM -Name $VMName -ErrorAction Stop
-    if ($vm.State -ne 'Off') { throw "VM '$VMName' must be off to detach media (it is $($vm.State))." }
 
-    $found = @()
-    $found += Get-VMDvdDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' }
-    $found += Get-VMHardDiskDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' }
+    $dvds = @(Get-VMDvdDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' })
+    $disks = @(Get-VMHardDiskDrive -VM $vm | Where-Object { $_.Path -like '*kickstart*' })
 
-    if (-not $found) { Write-Note 'No kickstart media attached'; return }
+    if (-not $dvds -and -not $disks) { Write-Note 'No kickstart media attached'; return }
 
-    foreach ($media in $found) {
-        $path = $media.Path
-        if (-not $PSCmdlet.ShouldProcess($path, 'Detach kickstart media')) { continue }
+    if ($disks -and $vm.State -ne 'Off') {
+        throw "VM '$VMName' has kickstart media attached as a hard disk, which cannot be detached while it is $($vm.State). Stop the VM first, or use the ISO form which can be ejected hot."
+    }
 
-        if ($media -is [Microsoft.HyperV.PowerShell.DvdDrive]) {
-            Remove-VMDvdDrive -VMDvdDrive $media
-        } else {
-            Remove-VMHardDiskDrive -VMHardDiskDrive $media
+    foreach ($dvd in $dvds) {
+        $path = $dvd.Path
+        if (-not $PSCmdlet.ShouldProcess($path, 'Eject kickstart media')) { continue }
+
+        # Ejecting works on a running VM; removing the drive does not. Ejecting
+        # is enough -- it releases the file so it can be deleted, and Anaconda
+        # has long since read it.
+        Set-VMDvdDrive -VMDvdDrive $dvd -Path $null
+        Write-Ok "Ejected $path"
+        if (-not $KeepFile -and (Test-Path -LiteralPath $path)) {
+            Remove-Item -LiteralPath $path -Force
+            Write-Ok "Deleted $path"
         }
-        Write-Ok "Detached $path"
+        if ($vm.State -eq 'Off') {
+            Remove-VMDvdDrive -VMDvdDrive $dvd
+            Write-Ok 'Removed the empty drive'
+        }
+    }
 
+    foreach ($disk in $disks) {
+        $path = $disk.Path
+        if (-not $PSCmdlet.ShouldProcess($path, 'Detach kickstart media')) { continue }
+        Remove-VMHardDiskDrive -VMHardDiskDrive $disk
+        Write-Ok "Detached $path"
         if (-not $KeepFile -and (Test-Path -LiteralPath $path)) {
             Remove-Item -LiteralPath $path -Force
             Write-Ok "Deleted $path"
@@ -626,9 +641,69 @@ function Remove-KickstartMedia {
     }
 
     # Boot the installed system from now on, not the installer.
-    $disk = Get-VMHardDiskDrive -VM $vm | Select-Object -First 1
-    if ($disk) {
-        Set-VMFirmware -VM $vm -FirstBootDevice $disk
-        Write-Ok 'Boot order set to the system disk'
+    if ($vm.State -eq 'Off') {
+        $systemDisk = Get-VMHardDiskDrive -VM $vm | Select-Object -First 1
+        if ($systemDisk) {
+            Set-VMFirmware -VM $vm -FirstBootDevice $systemDisk
+            Write-Ok 'Boot order set to the system disk'
+        }
     }
+}
+
+<#
+.SYNOPSIS
+    Wait for an unattended install to finish, then delete the kickstart media.
+
+.DESCRIPTION
+    The install is asynchronous -- Invoke-LinuxProfile returns as soon as the
+    VM starts -- so without this the media holding the password hash stays
+    attached indefinitely, and a stray installer boot would run `clearpart
+    --all` a second time.
+
+    "Finished" is taken to mean the guest reports an IP address over the
+    Hyper-V KVP channel. That only happens once the *installed* system has
+    booted and started hypervkvpd, which the %post enables; the installer
+    environment never reports one. So it is a real completion signal rather
+    than a timer.
+#>
+function Wait-LinuxInstall {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$VMName,
+        [int]$TimeoutMinutes = 60,
+        # Leave the media in place; just wait.
+        [switch]$NoCleanUp
+    )
+
+    Write-Step "Waiting for '$VMName' to finish installing"
+    Write-Note 'Signal: the guest reporting an address over KVP, which only the installed system does.'
+
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $address = $null
+    while ((Get-Date) -lt $deadline) {
+        $vm = Get-VM -Name $VMName -ErrorAction Stop
+        if ($vm.State -eq 'Off') {
+            # The kickstart says `reboot`, so an off VM means it halted instead.
+            Write-Warn "VM is off. If the install finished it should have rebooted; check the console."
+            return
+        }
+        $address = @(Get-VMNetworkAdapter -VMName $VMName |
+                Select-Object -ExpandProperty IPAddresses |
+                Where-Object { $_ -and $_ -notmatch ':' -and $_ -ne '127.0.0.1' })[0]
+        if ($address) { break }
+        Start-Sleep -Seconds 15
+    }
+
+    if (-not $address) {
+        Write-Warn "No address after $TimeoutMinutes minutes; not cleaning up. The media is still attached."
+        return
+    }
+
+    Write-Ok "Installed system is up at $address"
+    if ($NoCleanUp) {
+        Write-Note 'Leaving the kickstart media attached (-NoCleanUp).'
+        return
+    }
+    Remove-KickstartMedia -VMName $VMName -Confirm:$false
+    $address
 }

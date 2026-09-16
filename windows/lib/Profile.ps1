@@ -290,7 +290,11 @@ function Invoke-LinuxProfile {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Path,
-        [switch]$Force
+        [switch]$Force,
+        # Return as soon as the VM starts, leaving the kickstart media attached.
+        # The media carries the password hash and would reinstall the machine if
+        # the installer were ever booted again, so cleaning up is the default.
+        [switch]$NoWait
     )
 
     $p = Get-LinuxProfile -Path $Path
@@ -374,6 +378,18 @@ function Invoke-LinuxProfile {
         throw "The VM did not start. Free memory is the usual cause; see docs/troubleshooting.md."
     }
     Write-Ok "'$($p.vm.name)' is running"
+
+    if ($p.install.unattended -and -not $NoWait) {
+        # Blocks until the installed system reports an address, then ejects and
+        # deletes the kickstart media. Without this the media -- and the
+        # password hash on it -- stays attached forever.
+        $address = Wait-LinuxInstall -VMName $p.vm.name
+        if ($address) { Write-Ok "Guest is at $address" }
+    } elseif ($p.install.unattended) {
+        Write-Warn 'Kickstart media left attached (-NoWait).'
+        Write-Note "Clean it up when the install finishes:  Remove-KickstartMedia -VMName $($p.vm.name)"
+    }
+
     Write-Note "Next, in the guest:  sudo bash guest/setup.sh --desktop $($p.guest.desktop)"
     Write-Note "Then here:           Start-LinuxDesktop -Name $($p.vm.name)"
 }

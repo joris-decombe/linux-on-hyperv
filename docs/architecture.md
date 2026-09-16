@@ -137,8 +137,13 @@ Administrators, SYSTEM and the VM's own SID but *not* `Users`; the guest's
 which is where it belongs.
 
 **The remaining weakness is the hash itself.** `openssl passwd -6` uses 5000
-rounds, which is cheap to attack offline by anyone who can read the media. So
-`Remove-KickstartMedia` detaches and deletes it once the install is done --
-which also stops a stray installer boot from running `clearpart --all` again.
-Use a password you would be content to have attacked at 5000 rounds, or run
-`Remove-KickstartMedia` promptly, or both.
+rounds, which is cheap to attack offline by anyone who can read the media.
+
+So the media is cleaned up rather than left lying about. `Invoke-LinuxProfile`
+waits for the install to finish and then ejects and deletes it; `-NoWait` opts
+out, and `Remove-KickstartMedia` does the same job by hand. Ejecting works on a
+running VM -- only *removing the drive* needs the VM off -- so the cleanup
+costs no downtime. It also stops a stray installer boot from running
+`clearpart --all` a second time.
+
+Still, use a password you would be content to have attacked at 5000 rounds.
