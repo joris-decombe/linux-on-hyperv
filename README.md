@@ -126,11 +126,15 @@ cd windows
 ```
 
 It prompts once for the new Linux user's password, hashes it locally, writes a
-Kickstart onto a disk labeled `OEMDRV` -- which Anaconda looks for by name,
-with no kernel argument -- and boots. Nothing is typed into the VM.
+Kickstart onto an ISO labeled `OEMDRV` -- which Anaconda looks for by name,
+with no kernel argument -- attaches it as a second DVD drive, and boots.
+Nothing is typed into the VM.
 
-Elevation is needed only here: `Mount-VHD` attaches a disk to Windows itself,
-which Hyper-V Administrators does not cover.
+**No elevation is required.** The ISO is built through IMAPI2, the
+disc-mastering COM API built into Windows. (`New-KickstartDisk` builds the same
+thing as a VHDX instead, and that *does* need Administrator, because `Mount-VHD`
+attaches a disk to Windows itself -- which membership of Hyper-V Administrators
+does not cover. Prefer the ISO.)
 
 To drive the installer by hand instead:
 
@@ -194,7 +198,9 @@ password — Remote Login has no separate RDP credentials.
 | `Invoke-LinuxProfile` | Build a setup from a profile |
 | `Get-LinuxProfile` | Read and validate a profile |
 | `New-LinuxVM` | Create and start the VM |
-| `New-KickstartDisk` | Build an OEMDRV disk for an unattended install |
+| `New-KickstartIso` | Build an OEMDRV kickstart ISO (no elevation needed) |
+| `New-KickstartDisk` | Same as a VHDX; needs Administrator |
+| `Add-KickstartMedia` | Attach kickstart media to a VM |
 | `New-LinuxPasswordHash` | Hash a password locally for Kickstart |
 | `Add-KickstartDisk` | Attach one to an existing VM |
 | `Connect-LinuxVM` | Open the Hyper-V console (basic session, no sound) |

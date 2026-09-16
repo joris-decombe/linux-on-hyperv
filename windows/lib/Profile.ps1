@@ -331,19 +331,23 @@ function Invoke-LinuxProfile {
         $hash = New-LinuxPasswordHash
 
         $vmDir = Split-Path -Parent (Get-VMHardDiskDrive -VMName $p.vm.name | Select-Object -First 1 -ExpandProperty Path)
-        $ksPath = Join-Path $vmDir "$($p.vm.name)-kickstart.vhdx"
+        # An ISO rather than a VHDX: IMAPI2 builds it without elevation, where
+        # a VHDX needs Mount-VHD and therefore Administrator. Anaconda only
+        # cares that some volume is labeled OEMDRV.
+        $ksPath = Join-Path $vmDir "$($p.vm.name)-kickstart.iso"
 
         $ksSplat = @{
-            Path           = $ksPath
-            UserName       = $p.install.userName
-            FullName       = $p.install.fullName
-            Hostname       = $p.install.hostname
-            PasswordHash   = $hash
-            Timezone       = $p.install.timezone
-            KeyboardLayout = $p.install.keyboardLayout
-            Locale         = $p.install.locale
-            AuthorizedKey  = $key
-            Force          = $true
+            Path              = $ksPath
+            UserName          = $p.install.userName
+            FullName          = $p.install.fullName
+            Hostname          = $p.install.hostname
+            PasswordHash      = $hash
+            Timezone          = $p.install.timezone
+            KeyboardLayout    = $p.install.keyboardLayout
+            Locale            = $p.install.locale
+            AuthorizedKey     = $key
+            InstallGuestTools = [bool]$p.install.installGuestTools
+            Force             = $true
         }
         # A Live image installs its own payload and ignores %packages; a
         # netinst has nothing until told what to fetch.
@@ -352,15 +356,17 @@ function Invoke-LinuxProfile {
         } else {
             $ksSplat.PackageEnvironment = Get-DesktopEnvironmentGroup $p.guest.desktop
         }
-        New-KickstartDisk @ksSplat | Out-Null
+        New-KickstartIso @ksSplat | Out-Null
 
-        if ($p.install.installGuestTools) {
-            Update-KickstartDisk -Path $ksPath -UserName $p.install.userName -InstallGuestTools
-        }
-        Add-KickstartDisk -VMName $p.vm.name -Path $ksPath
+        Add-KickstartMedia -VMName $p.vm.name -Path $ksPath
 
-        # Anaconda has to run for the kickstart to be read, so boot the ISO.
-        Set-VMFirmware -VMName $p.vm.name -FirstBootDevice (Get-VMDvdDrive -VMName $p.vm.name | Select-Object -First 1)
+        # Anaconda has to run for the kickstart to be read, so boot the
+        # installer. There are two DVD drives now -- the installer and the
+        # kickstart -- and picking the first one found would hand the firmware
+        # a non-bootable disc and stall at the UEFI shell.
+        $installerDvd = Get-VMDvdDrive -VMName $p.vm.name | Where-Object Path -eq $p.vm.isoPath | Select-Object -First 1
+        if (-not $installerDvd) { throw "The installer ISO is not attached to '$($p.vm.name)'." }
+        Set-VMFirmware -VMName $p.vm.name -FirstBootDevice $installerDvd
     }
 
     Start-VM -Name $p.vm.name -ErrorAction Continue

@@ -88,10 +88,16 @@ on both — and it scopes the rule to that subnet instead of opening 3389 wide.
 ## Unattended installs, and which media can do them
 
 Anaconda scans for a volume labeled `OEMDRV` at startup and runs the `ks.cfg`
-it finds there, with no kernel argument. The kit builds that volume as a FAT32
-VHDX, because Windows has no `genisoimage` and PowerShell makes a VHDX
-natively -- and because FAT32 uppercases its label, which is what Anaconda
-wants.
+it finds there, with no kernel argument.
+
+The kit builds that volume as an **ISO**, through IMAPI2 -- the disc-mastering
+COM API Windows has shipped since Vista. The reason is privilege, not taste: a
+VHDX has to be formatted, which means `Mount-VHD`, which attaches a disk to
+Windows itself and requires Administrator. Membership of Hyper-V Administrators
+does not cover it, and the failure is an opaque `0x80070522`. Building an ISO
+needs nothing. ISO9660 uppercases its volume identifier, which is what Anaconda
+matches on anyway. `New-KickstartDisk` still builds the VHDX form for anyone
+who wants a writable volume.
 
 **The media matters, and this is easy to get wrong.** A Fedora *Live* image
 boots to a GNOME desktop and only starts Anaconda when someone clicks "Install
