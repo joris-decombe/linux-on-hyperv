@@ -78,6 +78,14 @@ These were all established by measurement. Re-deriving them costs hours.
   sized by the client — that is what makes the window resizable. KDE's KRdp
   cannot do headless login; xrdp is X11-only and so cannot serve a Wayland
   desktop at all. `guest/lib/desktop.sh` encodes which backend each desktop gets.
+- **Remote Login still needs RDP credentials set.** It ends at a GDM login
+  screen, so it looks as though PAM is the only authentication involved and
+  `set-credentials` belongs to the per-user Desktop Sharing mode. It does not:
+  the credentials are a gate in front of the daemon, and with them empty
+  `gnome-remote-desktop` starts cleanly, logs `RDP server started`, holds 3389
+  open, and refuses every client with `Credentials are not set, denying
+  client`. We set them to the account's own password so there is one secret;
+  the unattended install passes it in through the kickstart.
 - **WSL can run GPU-accelerated *applications* but not a desktop.** It has
   `/dev/dxg` and no DRM node, so Mesa's `d3d12` driver works for apps while
   `gnome-remote-desktop` segfaults on `fd -1`. See the comment block at the top
@@ -126,6 +134,16 @@ These were all established by measurement. Re-deriving them costs hours.
   Check `ssh-keygen -y -f <key>` before touching anything server-side. The
   first-boot script's `chown`/`restorecon` are kept as cheap insurance, but they
   fixed nothing and are not evidence of anything.
+- **An open port is not a working server.** `Wait-LinuxDesktop` used a bare TCP
+  connect on 3389 and printed "Ready. Nothing else needs doing in the guest"
+  over a daemon that was denying every client. Health checks here must complete
+  a protocol exchange, not a handshake-free connect — `Test-RdpHandshake` sends
+  an X.224 Connection Request and requires a Connection Confirm (`0xD0`) back.
+- **Plaintext on the install media.** `-RdpPassword` puts the account password
+  in the kickstart in the clear, alongside the SHA-512 hash that was already
+  there. That is a real step down and it is deliberate: the daemon needs the
+  password, not a hash. The guest shreds its copy once `grdctl` has it, and the
+  media should be removed after provisioning.
 - **Line endings are pinned in `.gitattributes`** — LF everywhere, CRLF for
   PowerShell. Shell scripts with CRLF fail in the guest on the shebang and on
   every heredoc terminator.

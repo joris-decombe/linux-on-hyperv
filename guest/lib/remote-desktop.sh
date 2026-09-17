@@ -56,6 +56,7 @@ lh_rdp_gnome() {
   run grdctl --system rdp set-tls-cert "$LH_TLS_DIR/rdp-tls.crt"
   run grdctl --system rdp set-tls-key "$LH_TLS_DIR/rdp-tls.key"
   run grdctl --system rdp enable
+  lh_rdp_credentials
   enable_unit gnome-remote-desktop.service
 
   if [[ $LH_DRY_RUN != 1 ]]; then
@@ -64,7 +65,70 @@ lh_rdp_gnome() {
   fi
 
   ok 'Remote Login enabled'
-  note "Log in over RDP with the guest's own username and password."
+}
+
+# The daemon will not talk to a client until these are set.
+#
+# This cost an evening. Remote Login looks like it should authenticate against
+# PAM -- it ends at a GDM login screen, after all -- so it is easy to assume the
+# account's own password is enough and that setting credentials is only for the
+# per-user "Desktop Sharing" mode. It is not. With them empty the daemon starts
+# cleanly, logs "RDP server started", accepts the TCP connection, and then
+# refuses to negotiate, logging:
+#
+#     [RDP] Credentials are not set, denying client
+#
+# The client shows 0x904 with no explanation, and a port scan shows 3389 open,
+# so everything outside the journal says the server is fine.
+#
+# The credentials are a gate in front of the daemon, separate from the login
+# you then do at GDM. We set them to the same account password, which keeps it
+# to one secret; LH_RDP_CREDENTIALS_FILE is how the unattended install passes
+# it in (see New-KickstartContent -RdpPassword).
+lh_rdp_credentials() {
+  local file=${LH_RDP_CREDENTIALS_FILE:-/var/lib/linux-on-hyperv/rdp-credentials}
+  local user password
+
+  if [[ ! -f $file ]]; then
+    warn 'no RDP credentials supplied, so the daemon will deny every client'
+    note 'Set them by hand with:  sudo grdctl --system rdp set-credentials <user>'
+    note "or drop a file at $file with 'user' and 'password' lines."
+    return 0
+  fi
+
+  # shellcheck disable=SC1090
+  user=$(sed -n 's/^user=//p' "$file")
+  password=$(sed -n 's/^password=//p' "$file")
+  if [[ -z $user || -z $password ]]; then
+    warn "$file has no user= or password= line; leaving credentials unset"
+    return 0
+  fi
+
+  if [[ $LH_DRY_RUN == 1 ]]; then
+    note "[dry-run] grdctl --system rdp set-credentials $user <password>"
+    return 0
+  fi
+
+  # The password goes on grdctl's stdin rather than its argv: argv is world
+  # readable in /proc for as long as the process lives. Twice, because it
+  # prompts for the password and then for a confirmation.
+  if printf '%s\n%s\n' "$password" "$password" |
+    grdctl --system rdp set-credentials "$user" 2>/dev/null; then
+    ok "RDP credentials set for '$user'"
+  elif grdctl --system rdp set-credentials "$user" "$password" 2>/dev/null; then
+    # Older grdctl takes the password as an argument and cannot prompt.
+    ok "RDP credentials set for '$user' (argv form)"
+  else
+    warn 'could not set RDP credentials; the daemon will deny clients'
+    return 0
+  fi
+
+  # Prove it took. "Password: (empty)" in the status output is exactly the
+  # state that produced the silent failure, so refusing to claim success
+  # without checking is the whole point.
+  if grdctl --system status 2>/dev/null | grep -qiE '^\s*Username:\s*\(empty\)'; then
+    warn 'grdctl still reports an empty username; credentials did not take'
+  fi
 }
 
 # --- KDE ------------------------------------------------------------------

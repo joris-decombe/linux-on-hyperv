@@ -43,6 +43,11 @@ gnome)
   check 'gnome-remote-desktop installed'     'sudo bash setup.sh --only remote_desktop'     bash -c 'command -v grdctl >/dev/null'
   check 'TLS certificate present'     'sudo bash setup.sh --only remote_desktop'     test -f /var/lib/gnome-remote-desktop/certificates/rdp-tls.crt
   check 'system RDP enabled in grdctl'     'sudo grdctl --system rdp enable'     bash -c 'grdctl --system status 2>/dev/null | grep -qi enabled'
+  # Empty credentials are the failure that looks like success: the daemon
+  # starts, logs "RDP server started", holds port 3389 open, and then denies
+  # every client with "Credentials are not set". Nothing outside the journal
+  # says anything is wrong, so check it explicitly.
+  check 'RDP credentials set'     'sudo grdctl --system rdp set-credentials <user>'     bash -c 'grdctl --system status 2>/dev/null | grep -qiE "^[[:space:]]*Username:[[:space:]]*\(empty\)" && exit 1 || exit 0'
   check 'gnome-remote-desktop.service active'     'sudo systemctl enable --now gnome-remote-desktop.service  (then: journalctl -u gnome-remote-desktop -n 50)'     systemctl is-active --quiet gnome-remote-desktop.service
   ;;
 kde)

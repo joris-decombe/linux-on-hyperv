@@ -342,6 +342,7 @@ function Invoke-LinuxProfile {
 
     if ($p.install.unattended) {
         $key = ''
+        $rdpPassword = ''
         if ($p.install.authorizedKeyPath -and (Test-Path -LiteralPath $p.install.authorizedKeyPath)) {
             $key = (Get-Content -LiteralPath $p.install.authorizedKeyPath -Raw).Trim()
         }
@@ -351,6 +352,9 @@ function Invoke-LinuxProfile {
             $secret = New-LinuxPassword
             $hash = New-LinuxPasswordHash -Password $secret
             Save-LinuxVMCredential -VMName $p.vm.name -UserName $p.install.userName -Password $secret | Out-Null
+            # gnome-remote-desktop needs the password itself, not a hash, so
+            # the guest can set its RDP credentials without anyone typing.
+            if ($p.install.provision) { $rdpPassword = ConvertFrom-SecureStringPlain $secret }
         } else {
             Write-Host ''
             Write-Host "Password for the Linux user '$($p.install.userName)':" -ForegroundColor Cyan
@@ -380,6 +384,7 @@ function Invoke-LinuxProfile {
             ProvisionRepo     = $p.install.provisionRepo
             ProvisionRef      = $p.install.provisionRef
             Desktop           = $p.guest.desktop
+            RdpPassword       = $rdpPassword
             Force             = $true
         }
         # A Live image installs its own payload and ignores %packages; a
@@ -422,6 +427,18 @@ function Invoke-LinuxProfile {
         # served: the first-boot unit still has packages to fetch.
         if ($address -and $p.install.provision) {
             if (Wait-LinuxDesktop -VMName $p.vm.name -Port $p.guest.rdpPort) {
+                # Now, and only now, is the media safe to remove: it could not
+                # be detached while the VM ran, and until provisioning finished
+                # the guest still needed the credentials on it. It carries the
+                # password in the clear, so this is not housekeeping.
+                if (Get-VMHardDiskDrive -VMName $p.vm.name | Where-Object { $_.Path -like '*kickstart*' }) {
+                    Write-Step 'Removing the kickstart media'
+                    Write-Note 'It holds the RDP password in plaintext, so the VM is restarted to detach it.'
+                    Stop-VM -Name $p.vm.name -Force -ErrorAction Stop
+                    Remove-KickstartMedia -VMName $p.vm.name -Confirm:$false
+                    Start-VM -Name $p.vm.name -ErrorAction Stop
+                    Wait-LinuxDesktop -VMName $p.vm.name -Port $p.guest.rdpPort -TimeoutMinutes 10 | Out-Null
+                }
                 Write-Ok 'Ready. Nothing else needs doing in the guest.'
             }
         }

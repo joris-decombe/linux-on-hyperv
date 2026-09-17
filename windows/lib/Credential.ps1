@@ -165,3 +165,25 @@ function Remove-LinuxVMCredential {
         Write-Ok "Removed $path"
     }
 }
+
+<#
+.SYNOPSIS
+    Unwrap a SecureString. Use sparingly and never hold the result.
+
+.DESCRIPTION
+    Exists because gnome-remote-desktop's system daemon needs the password
+    itself, not a hash, before it will speak to any client. The rest of this
+    module goes to some trouble never to materialise a plaintext password, so
+    this is the one deliberate exception rather than a convenience.
+#>
+function ConvertFrom-SecureStringPlain {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][securestring]$Secure)
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try {
+        [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}

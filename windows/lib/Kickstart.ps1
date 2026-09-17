@@ -39,6 +39,7 @@ the unit re-clones only if that failed.
 @@REPO@@, @@REF@@ and @@DESKTOP@@ are substituted by New-KickstartContent.
 #>
 $script:FirstBootPost = @'
+@@CREDENTIALS@@
 mkdir -p /opt
 git clone --depth 1 --branch '@@REF@@' '@@REPO@@' /opt/linux-on-hyperv || true
 
@@ -74,6 +75,13 @@ for home in /home/*/ /root/; do
 done
 
 bash "$root/guest/setup.sh" --desktop '@@DESKTOP@@'
+status=$?
+
+# The RDP password was plaintext on the install media and is plaintext
+# here. grdctl has its own copy now, so this one has no further use.
+creds=/var/lib/linux-on-hyperv/rdp-credentials
+[ -f "$creds" ] && { shred -u "$creds" 2>/dev/null || rm -f "$creds"; }
+exit $status
 FIRSTBOOT
 chmod 755 /usr/local/sbin/linux-on-hyperv-firstboot
 
@@ -286,7 +294,15 @@ function New-KickstartContent {
         [switch]$Provision,
         [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
         [string]$ProvisionRef = 'main',
-        [string]$Desktop = 'gnome'
+        [string]$Desktop = 'gnome',
+        # gnome-remote-desktop's system daemon refuses every client until RDP
+        # credentials are set -- it is a gate in front of the daemon, separate
+        # from the GDM login you then do, and not something PAM covers. So the
+        # password has to reach the guest. Passing it here puts it in plaintext
+        # on the install media, which is a real step down from the SHA-512 hash
+        # already there; the media is deleted once provisioning finishes and
+        # the guest shreds its copy. Leave it unset to configure RDP by hand.
+        [string]$RdpPassword
     )
 
     if ($PasswordHash -notmatch '^\$6\$') {
@@ -394,7 +410,24 @@ function New-KickstartContent {
         $ks.Add('systemctl enable hypervkvpd.service hypervvssd.service sshd.service')
         if ($Provision) {
             $ks.Add('')
+            $credentials = ''
+            if ($RdpPassword) {
+                if ($RdpPassword -match "['`n`r]") {
+                    throw 'RdpPassword contains a quote or newline, which cannot be embedded safely in the kickstart.'
+                }
+                # install -m 600 before any content is written, so the password
+                # is never briefly readable at the default umask.
+                $credentials = @"
+install -d -m 700 /var/lib/linux-on-hyperv
+install -m 600 /dev/null /var/lib/linux-on-hyperv/rdp-credentials
+cat > /var/lib/linux-on-hyperv/rdp-credentials <<'CREDENTIALS'
+user=$UserName
+password=$RdpPassword
+CREDENTIALS
+"@
+            }
             foreach ($line in (($script:FirstBootPost `
+                            -replace '@@CREDENTIALS@@', $credentials.TrimEnd() `
                             -replace '@@REPO@@', $ProvisionRepo `
                             -replace '@@REF@@', $ProvisionRef `
                             -replace '@@DESKTOP@@', $Desktop) -split "`r?`n")) {
@@ -417,7 +450,7 @@ function Get-KickstartContentArgs {
         'KeyboardLayout', 'Locale', 'AuthorizedKey', 'PackageEnvironment',
         'ReleaseVersion', 'Live', 'InstallGuestTools', 'AllowReinstall',
         'EncryptDisk', 'EncryptionPassphrase',
-        'Provision', 'ProvisionRepo', 'ProvisionRef', 'Desktop'
+        'Provision', 'ProvisionRepo', 'ProvisionRef', 'Desktop', 'RdpPassword'
     )
     $out = @{}
     foreach ($k in $keep) {
@@ -462,6 +495,7 @@ function New-KickstartIso {
         [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
+        [string]$RdpPassword,
         [switch]$Force
     )
 
@@ -581,6 +615,7 @@ function New-KickstartDisk {
         [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
+        [string]$RdpPassword,
         [switch]$Force
     )
 
@@ -955,6 +990,7 @@ function New-KickstartVhd {
         [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
+        [string]$RdpPassword,
         [switch]$Force
     )
 

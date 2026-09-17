@@ -125,7 +125,7 @@ $(printf '\033[36mDone.\033[0m')
   Desktop: ${LH_DESKTOP}, backend: $(lh_rdp_backend).
 $(if [[ $(lh_rdp_backend) == gnome ]]; then
     printf '%s
-' "  You will get a GDM login screen over RDP. Log in with this guest's own"       "  username and password - Remote Login does not use separate RDP credentials."       ""       "  Resize the window and the desktop resizes with it. Sound plays on Windows."
+' "  RDP asks for credentials first, then GDM asks again. Both are this guest's"       "  own username and password - the unattended install sets the RDP pair to"       "  match, so it is one secret, not two."       ""       "  Resize the window and the desktop resizes with it. Sound plays on Windows."
   else
     printf '%s
 ' "  This backend does not resize with the client window - only the GNOME"       "  backend does. See the notes printed above for what it needs."

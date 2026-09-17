@@ -27,6 +27,8 @@ Export-ModuleMember -Function @(
     'Get-LinuxProfile'
     'New-LinuxProfile'
     'Invoke-LinuxProfile'
+    'Wait-LinuxDesktop'
+    'Test-RdpHandshake'
     'Connect-LinuxVM'
     'Remove-LinuxVM'
     'Get-LinuxVMAddress'

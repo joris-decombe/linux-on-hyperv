@@ -144,7 +144,7 @@ function Wait-LinuxDesktop {
     )
 
     Write-Step "Waiting for '$VMName' to finish provisioning its desktop"
-    Write-Note "Signal: port $Port answering, which only gnome-remote-desktop provides."
+    Write-Note "Signal: a completed RDP handshake, not merely an open port."
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     while ((Get-Date) -lt $deadline) {
@@ -152,8 +152,7 @@ function Wait-LinuxDesktop {
                 Select-Object -ExpandProperty IPAddresses |
                 Where-Object { $_ -and $_ -notmatch ':' -and $_ -ne '127.0.0.1' })[0]
 
-        if ($address -and (Test-NetConnection -ComputerName $address -Port $Port `
-                    -WarningAction SilentlyContinue -InformationLevel Quiet)) {
+        if ($address -and (Test-RdpHandshake -Address $address -Port $Port)) {
             Write-Ok "Desktop is being served at ${address}:$Port"
             return $address
         }
@@ -164,4 +163,60 @@ function Wait-LinuxDesktop {
     Write-Note 'The guest logs what it did: /var/log/linux-on-hyperv-firstboot.log'
     Write-Note "Or watch it live:  journalctl -u linux-on-hyperv-firstboot -f"
     $null
+}
+
+<#
+.SYNOPSIS
+    True when something at Address:Port actually speaks RDP.
+
+.DESCRIPTION
+    A TCP connect is not enough, and believing otherwise cost an evening here.
+    gnome-remote-desktop accepts the connection before it decides whether it
+    will talk to you, so with RDP credentials unset it accepts, says nothing,
+    and denies the client -- while every port check on the Windows side reports
+    3389 open and healthy. Invoke-LinuxProfile printed "Ready. Nothing else
+    needs doing in the guest" over exactly that state.
+
+    So send what mstsc sends: an X.224 Connection Request. A working server
+    answers with a Connection Confirm (PDU type 0xD0) naming the security
+    protocol it picked. Anything else -- silence, a reset, a timeout -- is not
+    a server you can connect to.
+#>
+function Test-RdpHandshake {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Address,
+        [int]$Port = 3389,
+        [int]$TimeoutMs = 4000
+    )
+
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        if (-not $client.ConnectAsync($Address, $Port).Wait($TimeoutMs)) { return $false }
+
+        # X.224 Connection Request with an RDP negotiation request offering
+        # TLS and CredSSP -- byte for byte what a client opens with.
+        $request = [byte[]](
+            0x03, 0x00, 0x00, 0x13,                     # TPKT header, 19 bytes
+            0x0E, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00,   # X.224 CR
+            0x01, 0x00, 0x08, 0x00,                     # RDP_NEG_REQ
+            0x03, 0x00, 0x00, 0x00                      # TLS | CredSSP
+        )
+
+        $stream = $client.GetStream()
+        $stream.ReadTimeout = $TimeoutMs
+        $stream.Write($request, 0, $request.Length)
+        $stream.Flush()
+
+        $reply = [byte[]]::new(19)
+        $read = $stream.Read($reply, 0, $reply.Length)
+        # TPKT version 3, and an X.224 Connection Confirm rather than a
+        # Disconnect Request, which is how a refusal arrives when it arrives
+        # at all.
+        ($read -ge 6) -and ($reply[0] -eq 0x03) -and ($reply[5] -eq 0xD0)
+    } catch {
+        $false
+    } finally {
+        $client.Dispose()
+    }
 }
