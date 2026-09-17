@@ -117,6 +117,19 @@ enable_unit() {
 
 # The invoking user, even though the script runs under sudo. Almost everything
 # here is system-level, but the RDP login is per-user and needs the real name.
+#
+# SUDO_USER is empty when this runs from the first-boot unit, where there is no
+# invoking user at all -- systemd started it as root. Falling back to `id -un`
+# there yields "root", which would have configured autologin and the RDP login
+# for an account nobody uses. So fall back to the first ordinary account
+# instead: UID >= 1000 with a real shell, which on these machines is the
+# account the kickstart created.
 target_user() {
-  printf '%s' "${SUDO_USER:-$(id -un)}"
+  if [[ -n ${SUDO_USER:-} ]]; then
+    printf '%s' "$SUDO_USER"
+    return
+  fi
+  local user
+  user=$(awk -F: '$3 >= 1000 && $3 < 65534 && $7 !~ /(nologin|false)$/ { print $1; exit }' /etc/passwd)
+  printf '%s' "${user:-$(id -un)}"
 }

@@ -16,12 +16,12 @@ LH_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=lib/common.sh
 source "$LH_ROOT/lib/common.sh"
-for module in desktop preflight integration remote-desktop audio firewall; do
+for module in desktop preflight integration remote-desktop audio firewall prompts; do
   # shellcheck disable=SC1090
   source "$LH_ROOT/lib/$module.sh"
 done
 
-LH_MODULES=(integration remote_desktop audio firewall)
+LH_MODULES=(integration remote_desktop audio firewall prompts)
 
 usage() {
   cat <<USAGE
@@ -32,6 +32,8 @@ Options:
                   Only gnome gives a session sized by the connecting client;
                   see lib/desktop.sh for what each backend can and cannot do.
   --port N        RDP port (default: ${LH_RDP_PORT}).
+  --autologin     Log the user in at GDM without a password. Removes one of the
+                  two remaining prompts, and unlocks the Hyper-V console too.
   --only MODULE   Run just one module. Repeatable.
   --skip MODULE   Skip a module. Repeatable.
   --dry-run       Print what would change without changing anything.
@@ -61,6 +63,10 @@ while [[ $# -gt 0 ]]; do
   --skip)
     skip+=("${2:?--skip needs a module name}")
     shift 2
+    ;;
+  --autologin)
+    LH_AUTOLOGIN=1
+    shift
     ;;
   --dry-run)
     LH_DRY_RUN=1
