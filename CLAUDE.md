@@ -51,6 +51,15 @@ Three kits that do not share a runtime, only conventions:
   `guest/lib/common.sh`, `desktop.sh` and `remote-desktop.sh`** so the two kits
   cannot drift; only its own modules live in `wsl/lib/`.
 
+The guest kit is not meant to be run by hand. `New-KickstartContent -Provision`
+emits a `%post` that clones this repo into the installed system and installs a
+**first-boot systemd oneshot** which runs `guest/setup.sh`. That split is
+forced: `%post` is chrooted with no systemd, no D-Bus and no loaded SELinux
+policy, so `grdctl` cannot enable Remote Login there and `restorecon` silently
+does nothing — both work one boot later. The unit's stamp file is written by
+`ExecStartPost`, so a failed provision retries on the next boot instead of
+marking a half-configured machine done.
+
 `profiles/*.json` is the user-facing entry point: one file describes a whole
 setup, `Invoke-LinuxProfile` applies it. Profiles are validated against a known
 key set in `Get-LinuxProfileDefault` before anything runs — add a key there or
@@ -108,6 +117,11 @@ These were all established by measurement. Re-deriving them costs hours.
   investigation at the wrong machine entirely. Collect failures and report them.
 - **Substring guards.** `if ('New-LinuxPassword' -notin $s)` is always false
   when `New-LinuxPasswordHash` is present. Match whole names.
+- **`sshkey` in a kickstart does not finish the job.** It writes
+  `authorized_keys` owned by root and unlabeled, and sshd then matches the key
+  and refuses the login anyway — the client sees `Server accepts key` followed
+  by `Permission denied`, which reads like the key is missing when it is not.
+  The `chown` and the `restorecon` both live in the first-boot script.
 - **Line endings are pinned in `.gitattributes`** — LF everywhere, CRLF for
   PowerShell. Shell scripts with CRLF fail in the guest on the shebang and on
   every heredoc terminator.

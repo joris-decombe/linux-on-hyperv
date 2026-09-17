@@ -25,6 +25,85 @@ DVD image boots straight into Anaconda, which does scan.
 #>
 
 <#
+The shell that finishes the job, emitted into %post.
+
+It is split in two on purpose. %post runs chrooted into the new system with no
+systemd, no D-Bus and no loaded SELinux policy, so `grdctl` cannot configure
+Remote Login there and `restorecon` silently does nothing. Both work perfectly
+one boot later. So %post only writes things down, and a oneshot unit does the
+work on the first real boot and then marks itself done.
+
+The repo is cloned during %post, while the installer's network is known good;
+the unit re-clones only if that failed.
+
+@@REPO@@, @@REF@@ and @@DESKTOP@@ are substituted by New-KickstartContent.
+#>
+$script:FirstBootPost = @'
+mkdir -p /opt
+git clone --depth 1 --branch '@@REF@@' '@@REPO@@' /opt/linux-on-hyperv || true
+
+cat > /usr/local/sbin/linux-on-hyperv-firstboot <<'FIRSTBOOT'
+#!/bin/bash
+# Provision this guest on its first boot. Idempotent: safe to run again by hand.
+set -o pipefail
+exec >>/var/log/linux-on-hyperv-firstboot.log 2>&1
+echo "=== $(date -Is) linux-on-hyperv first boot ==="
+
+repo='@@REPO@@'
+ref='@@REF@@'
+root=/opt/linux-on-hyperv
+
+[ -d "$root/.git" ] || git clone --depth 1 --branch "$ref" "$repo" "$root"
+
+# SSH keys, now that SELinux is actually running.
+#
+# Kickstart's sshkey writes authorized_keys, but the result is owned by root
+# and unlabeled. sshd then matches the key and refuses the login anyway, which
+# the client reports as "Server accepts key" followed by "Permission denied" --
+# the key present and still useless. The chown is what %post was missing; the
+# relabel can only happen here, where the policy is loaded.
+for home in /home/*/ /root/; do
+  [ -d "$home/.ssh" ] || continue
+  owner=$(stat -c %U "$home")
+  chown -R "$owner:$owner" "$home/.ssh"
+  chmod 700 "$home/.ssh"
+  chmod 600 "$home/.ssh/authorized_keys" 2>/dev/null
+  # StrictModes also refuses a group- or world-writable home directory.
+  chmod g-w,o-w "$home"
+  restorecon -R -F "$home/.ssh"
+done
+
+bash "$root/guest/setup.sh" --desktop '@@DESKTOP@@'
+FIRSTBOOT
+chmod 755 /usr/local/sbin/linux-on-hyperv-firstboot
+
+cat > /etc/systemd/system/linux-on-hyperv-firstboot.service <<'UNIT'
+[Unit]
+Description=linux-on-hyperv first boot provisioning
+# graphical.target because Remote Login serves GDM to the far end of the
+# connection, so GDM must exist before grdctl is told to publish it.
+After=graphical.target network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/linux-on-hyperv/provisioned
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/linux-on-hyperv-firstboot
+# ExecStartPost only runs when ExecStart succeeded, so a failed provision
+# leaves the stamp absent and is retried on the next boot rather than
+# silently marking a half-configured machine as done.
+ExecStartPost=/usr/bin/mkdir -p /var/lib/linux-on-hyperv
+ExecStartPost=/usr/bin/touch /var/lib/linux-on-hyperv/provisioned
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=graphical.target
+UNIT
+systemctl enable linux-on-hyperv-firstboot.service
+'@
+
+<#
 .SYNOPSIS
     Turn a password into the SHA-512 crypt hash Kickstart wants, without the
     plaintext reaching a command line or a transcript.
@@ -199,7 +278,15 @@ function New-KickstartContent {
         # must be typed at the console on every boot, before any network
         # exists, which defeats the point of an unattended machine.
         [switch]$EncryptDisk,
-        [string]$EncryptionPassphrase
+        [string]$EncryptionPassphrase,
+        # Finish the job. Without this the install ends at a console nobody can
+        # reach except through the Hyper-V window, and the remaining steps --
+        # enable Remote Login, open the firewall -- are done by hand, which is
+        # exactly the interaction the rest of this file exists to remove.
+        [switch]$Provision,
+        [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
+        [string]$ProvisionRef = 'main',
+        [string]$Desktop = 'gnome'
     )
 
     if ($PasswordHash -notmatch '^\$6\$') {
@@ -299,23 +386,21 @@ function New-KickstartContent {
         $ks.Add('%end')
     }
 
-    if ($InstallGuestTools) {
+    if ($InstallGuestTools -or $Provision) {
         $ks.Add('')
         $ks.Add('%post --log=/root/ks-post.log')
-        $ks.Add('# Runs in the installed system, with networking up.')
+        $ks.Add('# Runs in the installed system, chrooted, with networking up.')
         $ks.Add('dnf install -y hyperv-daemons openssh-server git')
         $ks.Add('systemctl enable hypervkvpd.service hypervvssd.service sshd.service')
-        $ks.Add('')
-        $ks.Add("# Kickstart's sshkey writes authorized_keys but does not always label it")
-        $ks.Add('# for SELinux. sshd then reads a file it is not allowed to read, and the')
-        $ks.Add('# client sees "Server accepts key" followed immediately by "Permission')
-        $ks.Add('# denied" -- the key present and still useless. Relabel and fix modes.')
-        $ks.Add('for h in /home/*/ /root/; do')
-        $ks.Add('  [ -d "$h/.ssh" ] || continue')
-        $ks.Add('  chmod 700 "$h/.ssh"')
-        $ks.Add('  chmod 600 "$h/.ssh/authorized_keys" 2>/dev/null || true')
-        $ks.Add('  restorecon -R -F "$h/.ssh" 2>/dev/null || true')
-        $ks.Add('done')
+        if ($Provision) {
+            $ks.Add('')
+            foreach ($line in (($script:FirstBootPost `
+                            -replace '@@REPO@@', $ProvisionRepo `
+                            -replace '@@REF@@', $ProvisionRef `
+                            -replace '@@DESKTOP@@', $Desktop) -split "`r?`n")) {
+                $ks.Add($line)
+            }
+        }
         $ks.Add('%end')
     }
 
@@ -331,7 +416,8 @@ function Get-KickstartContentArgs {
         'UserName', 'PasswordHash', 'FullName', 'Hostname', 'Timezone',
         'KeyboardLayout', 'Locale', 'AuthorizedKey', 'PackageEnvironment',
         'ReleaseVersion', 'Live', 'InstallGuestTools', 'AllowReinstall',
-        'EncryptDisk', 'EncryptionPassphrase'
+        'EncryptDisk', 'EncryptionPassphrase',
+        'Provision', 'ProvisionRepo', 'ProvisionRef', 'Desktop'
     )
     $out = @{}
     foreach ($k in $keep) {
@@ -372,6 +458,10 @@ function New-KickstartIso {
         [switch]$AllowReinstall,
         [switch]$EncryptDisk,
         [string]$EncryptionPassphrase,
+        [switch]$Provision,
+        [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
+        [string]$ProvisionRef = 'main',
+        [string]$Desktop = 'gnome',
         [switch]$Force
     )
 
@@ -487,6 +577,10 @@ function New-KickstartDisk {
         [switch]$AllowReinstall,
         [switch]$EncryptDisk,
         [string]$EncryptionPassphrase,
+        [switch]$Provision,
+        [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
+        [string]$ProvisionRef = 'main',
+        [string]$Desktop = 'gnome',
         [switch]$Force
     )
 
@@ -857,6 +951,10 @@ function New-KickstartVhd {
         [switch]$AllowReinstall,
         [switch]$EncryptDisk,
         [string]$EncryptionPassphrase,
+        [switch]$Provision,
+        [string]$ProvisionRepo = 'https://github.com/joris-decombe/linux-on-hyperv.git',
+        [string]$ProvisionRef = 'main',
+        [string]$Desktop = 'gnome',
         [switch]$Force
     )
 

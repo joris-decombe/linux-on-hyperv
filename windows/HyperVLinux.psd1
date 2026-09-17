@@ -27,6 +27,7 @@
     'Get-LinuxProfile'
     'New-LinuxProfile'
     'Invoke-LinuxProfile'
+    'Wait-LinuxDesktop'
         'Connect-LinuxVM'
         'Remove-LinuxVM'
         'Get-LinuxVMAddress'

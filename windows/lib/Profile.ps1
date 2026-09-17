@@ -57,6 +57,13 @@ function Get-LinuxProfileDefault {
             # password no one can mistype and nobody can brute-force. 'prompt'
             # asks, for when the password has to be one you already know.
             passwordMode      = 'generate'
+            # Finish the setup from inside the guest, on its first boot, rather
+            # than leaving someone to log in at the console and run setup.sh.
+            # This is what makes "unattended" mean a working desktop instead of
+            # a working login prompt.
+            provision         = $true
+            provisionRepo     = 'https://github.com/joris-decombe/linux-on-hyperv.git'
+            provisionRef      = 'main'
         }
 
         guest       = [ordered]@{
@@ -369,6 +376,10 @@ function Invoke-LinuxProfile {
             Locale            = $p.install.locale
             AuthorizedKey     = $key
             InstallGuestTools = [bool]$p.install.installGuestTools
+            Provision         = [bool]$p.install.provision
+            ProvisionRepo     = $p.install.provisionRepo
+            ProvisionRef      = $p.install.provisionRef
+            Desktop           = $p.guest.desktop
             Force             = $true
         }
         # A Live image installs its own payload and ignores %packages; a
@@ -407,6 +418,13 @@ function Invoke-LinuxProfile {
         if (-not $p.install.installGuestTools) { $waitArgs.AddressIsEnough = $true }
         $address = Wait-LinuxInstall @waitArgs
         if ($address) { Write-Ok "Guest is at $address" }
+        # The install being finished is not the same as the desktop being
+        # served: the first-boot unit still has packages to fetch.
+        if ($address -and $p.install.provision) {
+            if (Wait-LinuxDesktop -VMName $p.vm.name -Port $p.guest.rdpPort) {
+                Write-Ok 'Ready. Nothing else needs doing in the guest.'
+            }
+        }
     } elseif ($p.install.unattended) {
         Write-Warn 'Kickstart media left attached (-NoWait).'
         Write-Note "Clean it up when the install finishes:  Remove-KickstartMedia -VMName $($p.vm.name)"
@@ -415,6 +433,8 @@ function Invoke-LinuxProfile {
     if ($p.install.unattended -and $p.install.passwordMode -eq 'generate') {
         Write-Note "Desktop login:       Get-LinuxVMCredential -VMName $($p.vm.name) -AsPlainText"
     }
-    Write-Note "Next, in the guest:  sudo bash guest/setup.sh --desktop $($p.guest.desktop)"
-    Write-Note "Then here:           Start-LinuxDesktop -Name $($p.vm.name)"
+    if (-not $p.install.provision) {
+        Write-Note "Next, in the guest:  sudo bash guest/setup.sh --desktop $($p.guest.desktop)"
+    }
+    Write-Note "Connect:             Start-LinuxDesktop -Name $($p.vm.name)"
 }

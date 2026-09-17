@@ -121,3 +121,47 @@ function Copy-GuestKit {
     Write-Ok 'Copied'
     Write-Note 'Now run in the guest:  bash ~/linux-on-hyperv-guest/setup.sh'
 }
+
+<#
+.SYNOPSIS
+    Wait for the guest to finish provisioning itself and start serving RDP.
+
+.DESCRIPTION
+    The kickstart's first-boot unit installs gnome-remote-desktop, generates a
+    certificate and enables Remote Login, which takes several minutes of
+    package downloads after the install has already "finished". Port 3389
+    answering is the end of that: it is served by the guest's own
+    gnome-remote-desktop and by nothing else, so it cannot be true early.
+
+    Returns the address, or $null on timeout.
+#>
+function Wait-LinuxDesktop {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$VMName,
+        [int]$Port = 3389,
+        [int]$TimeoutMinutes = 30
+    )
+
+    Write-Step "Waiting for '$VMName' to finish provisioning its desktop"
+    Write-Note "Signal: port $Port answering, which only gnome-remote-desktop provides."
+
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    while ((Get-Date) -lt $deadline) {
+        $address = @(Get-VMNetworkAdapter -VMName $VMName |
+                Select-Object -ExpandProperty IPAddresses |
+                Where-Object { $_ -and $_ -notmatch ':' -and $_ -ne '127.0.0.1' })[0]
+
+        if ($address -and (Test-NetConnection -ComputerName $address -Port $Port `
+                    -WarningAction SilentlyContinue -InformationLevel Quiet)) {
+            Write-Ok "Desktop is being served at ${address}:$Port"
+            return $address
+        }
+        Start-Sleep -Seconds 20
+    }
+
+    Write-Warn "No RDP listener after $TimeoutMinutes minutes."
+    Write-Note 'The guest logs what it did: /var/log/linux-on-hyperv-firstboot.log'
+    Write-Note "Or watch it live:  journalctl -u linux-on-hyperv-firstboot -f"
+    $null
+}
