@@ -68,15 +68,33 @@ lh_firewall() {
 # SSH, which is the host whenever this is driven by the Windows module.
 lh_host_address() {
   local addr
-  # SSH_CONNECTION is "<client ip> <client port> <server ip> <server port>".
+
+  # SSH_CONNECTION is "<client ip> <client port> <server ip> <server port>",
+  # but sudo strips it from the environment, and this always runs under sudo.
+  # Reading it anyway costs nothing and covers a root shell that kept it.
   addr=$(awk '{ print $1 }' <<<"${SSH_CONNECTION:-}")
   if [[ -n $addr && $addr != *:* ]]; then
     printf '%s' "$addr"
     return 0
   fi
-  # Not over SSH -- the first-boot unit, or a console run. Fall back to the
-  # default gateway, correct on the Default Switch and a sane guess elsewhere.
-  ip -4 route show default 2>/dev/null | awk '{ print $3; exit }'
+
+  # The established SSH connection itself, which survives sudo because it is
+  # kernel state rather than an environment variable. This is the fix for a
+  # real incident: the gateway fallback below fired on an external switch and
+  # allowed 192.168.68.1 -- the router -- locking the host out of its own VM.
+  addr=$(ss -tnH state established '( sport = :22 )' 2>/dev/null |
+    awk '{ print $4 }' | sed 's/:[0-9]*$//' | grep -v ':' | head -1)
+  if [[ -n $addr ]]; then
+    printf '%s' "$addr"
+    return 0
+  fi
+
+  # Last resort, and only right on the Hyper-V Default Switch, where the host
+  # *is* the gateway. On an external switch this is the physical router, so
+  # say what is being assumed rather than silently allowing the wrong machine.
+  addr=$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')
+  [[ -n $addr ]] && warn "assuming the host is the default gateway ($addr); pass LH_RDP_ALLOW_FROM to be sure"
+  printf '%s' "$addr"
 }
 
 # Derive the subnet from the address the guest actually holds, so this works on
