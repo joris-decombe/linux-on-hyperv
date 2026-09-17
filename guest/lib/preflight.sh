@@ -4,7 +4,7 @@ lh_preflight() {
   step 'Preflight'
 
   [[ $EUID -eq 0 ]] || die 'Run this with sudo: sudo bash guest/setup.sh'
-  [[ -n ${SUDO_USER:-} ]] || warn 'No SUDO_USER; RDP will be configured for root, which is probably not what you want.'
+  [[ -n ${SUDO_USER:-} ]] || warn 'No SUDO_USER, so falling back to the first ordinary account (see target_user).'
 
   lh_detect_distro
   [[ -n $LH_PKG ]] || die "Unsupported distribution '$LH_DISTRO'. Known package managers: dnf, apt, zypper."

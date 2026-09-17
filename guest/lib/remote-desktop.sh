@@ -129,6 +129,18 @@ lh_rdp_credentials() {
   if grdctl --system status 2>/dev/null | grep -qiE '^\s*Username:\s*\(empty\)'; then
     warn 'grdctl still reports an empty username; credentials did not take'
   fi
+
+  # The daemon reads its credentials once, at startup, and by now it is
+  # already running -- the grdctl calls above activate it over D-Bus. So
+  # enable_unit later finds it "already enabled and running" and leaves it
+  # alone, and it keeps denying every client from a credential store that has
+  # since been filled in. The journal says "Credentials are not set" while
+  # grdctl --system status shows them set, which is as contradictory as it
+  # sounds and took a second full rebuild to see.
+  if systemctl is-active --quiet gnome-remote-desktop.service; then
+    run systemctl restart gnome-remote-desktop.service ||
+      warn 'could not restart gnome-remote-desktop; it may still be using empty credentials'
+  fi
 }
 
 # --- KDE ------------------------------------------------------------------
