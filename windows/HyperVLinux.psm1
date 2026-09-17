@@ -22,6 +22,7 @@ Export-ModuleMember -Function @(
     'Save-LinuxVMCredential'
     'Get-LinuxVMCredential'
     'Remove-LinuxVMCredential'
+    'New-LinuxAutomationKey'
     'Add-KickstartDisk'
     'Update-KickstartDisk'
     'Get-LinuxProfile'

@@ -267,8 +267,8 @@ function New-KickstartContent {
         [string]$Timezone = 'Pacific/Auckland',
         [string]$KeyboardLayout = 'us',
         [string]$Locale = 'en_NZ.UTF-8',
-        # Public key to drop in, so the guest is reachable without the console.
-        [string]$AuthorizedKey,
+        # Public keys to drop in, so the guest is reachable without the console.
+        [string[]]$AuthorizedKey,
         # A netinst image carries no packages, so it needs both an install
         # source and a package selection. A Live image carries its own payload
         # and ignores both -- pass -Live to leave them out.
@@ -345,8 +345,8 @@ function New-KickstartContent {
     }
     # gnome-initial-setup would otherwise ask again for everything set above.
     $ks.Add('firstboot --disable')
-    if ($AuthorizedKey) {
-        $ks.Add("sshkey --username=$UserName `"$AuthorizedKey`"")
+    foreach ($pubkey in @($AuthorizedKey | Where-Object { $_ })) {
+        $ks.Add("sshkey --username=$UserName `"$($pubkey.Trim())`"")
     }
     $ks.Add('reboot')
 
@@ -483,7 +483,7 @@ function New-KickstartIso {
         [string]$Timezone = 'Pacific/Auckland',
         [string]$KeyboardLayout = 'us',
         [string]$Locale = 'en_NZ.UTF-8',
-        [string]$AuthorizedKey,
+        [string[]]$AuthorizedKey,
         [string]$PackageEnvironment = '@^workstation-product-environment',
         [string]$ReleaseVersion = '44',
         [switch]$Live,
@@ -603,7 +603,7 @@ function New-KickstartDisk {
         [string]$Timezone = 'Pacific/Auckland',
         [string]$KeyboardLayout = 'us',
         [string]$Locale = 'en_NZ.UTF-8',
-        [string]$AuthorizedKey,
+        [string[]]$AuthorizedKey,
         [string]$PackageEnvironment = '@^workstation-product-environment',
         [string]$ReleaseVersion = '44',
         [switch]$Live,
@@ -978,7 +978,7 @@ function New-KickstartVhd {
         [string]$Timezone = 'Pacific/Auckland',
         [string]$KeyboardLayout = 'us',
         [string]$Locale = 'en_NZ.UTF-8',
-        [string]$AuthorizedKey,
+        [string[]]$AuthorizedKey,
         [string]$PackageEnvironment = '@^workstation-product-environment',
         [string]$ReleaseVersion = '44',
         [switch]$Live,

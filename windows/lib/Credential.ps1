@@ -187,3 +187,46 @@ function ConvertFrom-SecureStringPlain {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 }
+
+<#
+.SYNOPSIS
+    The SSH key this tooling uses to reach guests. Created on first use.
+
+.DESCRIPTION
+    Deliberately without a passphrase, which is the whole point. A profile
+    pointed at a passphrase-protected key produces a guest that no unattended
+    step can ever reach: ssh offers the public half happily, the server accepts
+    it, and then ssh cannot sign because there is no TTY to prompt at and no
+    agent to ask. That failure looks exactly like a rejected key, and cost four
+    wrong diagnoses here before anyone checked the client.
+
+    A passphrase-less key on disk is a real tradeoff, and it is bounded: this
+    one authorises nothing but the throwaway VMs this module builds. Personal
+    keys stay personal -- a profile can still name one, and it is added
+    alongside this rather than replacing it.
+#>
+function New-LinuxAutomationKey {
+    [CmdletBinding()]
+    param([string]$Path = (Join-Path $env:USERPROFILE '.ssh\linux-on-hyperv-auto'))
+
+    if (-not (Test-Path -LiteralPath "$Path.pub")) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+        Write-Step 'Creating the automation SSH key'
+        # -N "" from PowerShell hands ssh-keygen a literal pair of quote
+        # characters as the passphrase, so the key ends up encrypted with '""'
+        # and nothing can use it -- including the ssh-keygen check below, which
+        # is how this was caught. Letting cmd parse the arguments avoids it.
+        & cmd.exe /c "ssh-keygen -t ed25519 -f ""$Path"" -N """" -C ""linux-on-hyperv automation"" -q" 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath "$Path.pub")) { throw "ssh-keygen did not produce $Path.pub" }
+        Write-Ok "wrote $Path (no passphrase, for these VMs only)"
+    }
+
+    # Refuse to hand back a key that cannot sign unattended, rather than
+    # building another guest nothing can log into.
+    & ssh-keygen -y -f $Path 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Path is passphrase-protected, so automation cannot use it. Delete it and this will recreate it."
+    }
+
+    (Get-Content -LiteralPath "$Path.pub" -Raw).Trim()
+}

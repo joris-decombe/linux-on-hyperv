@@ -341,10 +341,14 @@ function Invoke-LinuxProfile {
     New-LinuxVM @splat | Out-Null
 
     if ($p.install.unattended) {
-        $key = ''
         $rdpPassword = ''
+        # The automation key always goes in, created on first use. Without it
+        # nothing here can reach the guest afterwards, and a profile naming a
+        # personal key is no substitute: personal keys usually have a
+        # passphrase, which unattended tooling cannot answer.
+        $keys = @(New-LinuxAutomationKey)
         if ($p.install.authorizedKeyPath -and (Test-Path -LiteralPath $p.install.authorizedKeyPath)) {
-            $key = (Get-Content -LiteralPath $p.install.authorizedKeyPath -Raw).Trim()
+            $keys += (Get-Content -LiteralPath $p.install.authorizedKeyPath -Raw).Trim()
         }
         if ($p.install.passwordMode -eq 'generate') {
             # Nothing to type: the password is generated, hashed for the
@@ -378,7 +382,7 @@ function Invoke-LinuxProfile {
             Timezone          = $p.install.timezone
             KeyboardLayout    = $p.install.keyboardLayout
             Locale            = $p.install.locale
-            AuthorizedKey     = $key
+            AuthorizedKey     = $keys
             InstallGuestTools = [bool]$p.install.installGuestTools
             Provision         = [bool]$p.install.provision
             ProvisionRepo     = $p.install.provisionRepo

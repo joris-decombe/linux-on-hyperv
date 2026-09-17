@@ -134,6 +134,14 @@ These were all established by measurement. Re-deriving them costs hours.
   Check `ssh-keygen -y -f <key>` before touching anything server-side. The
   first-boot script's `chown`/`restorecon` are kept as cheap insurance, but they
   fixed nothing and are not evidence of anything.
+- **Automation needs its own key, and it must have no passphrase.**
+  `New-LinuxAutomationKey` creates and verifies one, and every profile injects
+  it *in addition to* whatever personal key it names. A personal key usually
+  has a passphrase, and an unattended run has no TTY to answer the prompt and
+  no agent to ask, so a guest authorised only with one is unreachable by the
+  very tooling that built it. Generating `-N ""` from PowerShell also does not
+  work: ssh-keygen receives two literal quote characters and encrypts the key
+  with them, which is why that call goes through `cmd.exe`.
 - **An open port is not a working server.** `Wait-LinuxDesktop` used a bare TCP
   connect on 3389 and printed "Ready. Nothing else needs doing in the guest"
   over a daemon that was denying every client. Health checks here must complete
