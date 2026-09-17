@@ -85,6 +85,13 @@ function Start-LinuxDesktop {
         # The guest's certificate is self-signed by grdctl; without this mstsc
         # refuses outright rather than warning.
         'authentication level:i:0'
+        # RDSTLS. gnome-remote-desktop supports it and mstsc only offers it when
+        # this is set, so without it every connection stops on "Continue With
+        # Insecure Connection?" -- a dialog the guest itself puts up, naming
+        # this exact setting as the fix. The name is a historical accident: the
+        # flag was for server redirection, and RDSTLS is the security layer that
+        # redirection required, so the two are welded together in the client.
+        'use redirection server name:i:1'
         'prompt for credentials:i:1'
         "screen mode id:i:$(if ($FullScreen) { 2 } else { 1 })"
     )
@@ -93,7 +100,7 @@ function Start-LinuxDesktop {
     Start-Process mstsc.exe -ArgumentList "`"$rdpPath`""
     Write-Ok "Opened Remote Desktop to $Address"
     Write-Note "Profile: $rdpPath"
-    Write-Note 'Log in with your guest username and password.'
+    Write-Note 'Log in with your guest username and password -- RDP asks, then GDM asks again.'
 }
 
 <#
