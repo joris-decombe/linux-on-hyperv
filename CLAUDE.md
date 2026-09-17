@@ -117,11 +117,15 @@ These were all established by measurement. Re-deriving them costs hours.
   investigation at the wrong machine entirely. Collect failures and report them.
 - **Substring guards.** `if ('New-LinuxPassword' -notin $s)` is always false
   when `New-LinuxPasswordHash` is present. Match whole names.
-- **`sshkey` in a kickstart does not finish the job.** It writes
-  `authorized_keys` owned by root and unlabeled, and sshd then matches the key
-  and refuses the login anyway — the client sees `Server accepts key` followed
-  by `Permission denied`, which reads like the key is missing when it is not.
-  The `chown` and the `restorecon` both live in the first-boot script.
+- **`Server accepts key` then `Permission denied` is usually the client.** It
+  cost four wrong diagnoses here — SELinux, then ownership, both "fixed" in the
+  guest, neither the cause. ssh offers the *public* half read from `.pub`, which
+  needs no passphrase, so the server matches it and says yes; the failure comes
+  one step later, when ssh must sign with the private half and cannot decrypt
+  it. A passphrase-protected key with no agent and no TTY produces this exactly.
+  Check `ssh-keygen -y -f <key>` before touching anything server-side. The
+  first-boot script's `chown`/`restorecon` are kept as cheap insurance, but they
+  fixed nothing and are not evidence of anything.
 - **Line endings are pinned in `.gitattributes`** — LF everywhere, CRLF for
   PowerShell. Shell scripts with CRLF fail in the guest on the shebang and on
   every heredoc terminator.
