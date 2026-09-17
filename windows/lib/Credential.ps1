@@ -36,7 +36,10 @@ function New-LinuxPassword {
 
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'.ToCharArray()
     $bytes = [byte[]]::new($Length * 4)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    # RandomNumberGenerator::Fill is .NET Core only; Create().GetBytes() works
+    # on Windows PowerShell 5.1 as well, and this module supports both.
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
 
     $chars = [char[]]::new($Length)
     try {

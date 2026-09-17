@@ -116,11 +116,19 @@ function Invoke-OpensslPasswd {
         $candidates += , @{ File = 'wsl.exe'; Args = @('-e', 'openssl') + $opensslArgs }
     }
 
+    $failures = [System.Collections.Generic.List[string]]::new()
     foreach ($c in $candidates) {
         try {
             $psi = [Diagnostics.ProcessStartInfo]::new()
             $psi.FileName = $c.File
-            foreach ($a in $c.Args) { $psi.ArgumentList.Add($a) }
+            # ArgumentList is .NET Core only. Windows PowerShell 5.1 has just
+            # the Arguments string, so quote into it. None of these arguments
+            # contain spaces, but quoting costs nothing and a salt is opaque.
+            if ($psi.PSObject.Properties.Name -contains 'ArgumentList') {
+                foreach ($a in $c.Args) { $psi.ArgumentList.Add($a) }
+            } else {
+                $psi.Arguments = ($c.Args | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+            }
             $psi.RedirectStandardInput = $true
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
@@ -135,11 +143,21 @@ function Invoke-OpensslPasswd {
             $proc.StandardInput.BaseStream.Flush()
             $proc.StandardInput.Close()
             $out = $proc.StandardOutput.ReadToEnd()
+            $err = $proc.StandardError.ReadToEnd()
             $proc.WaitForExit()
             if ($proc.ExitCode -eq 0 -and $out.Trim()) { return $out.Trim() }
+            $failures.Add("$($c.File): exit $($proc.ExitCode) $($err.Trim())")
         } catch {
-            continue
+            # Do not swallow this. An earlier version did, and a .NET API that
+            # does not exist on PowerShell 5.1 surfaced as "No openssl found",
+            # which sent the search in entirely the wrong direction.
+            $failures.Add("$($c.File): $($_.Exception.Message)")
         }
+    }
+
+    if ($failures.Count) {
+        Write-Warn 'Every openssl attempt failed:'
+        $failures | ForEach-Object { Write-Note "  $_" }
     }
     $null
 }

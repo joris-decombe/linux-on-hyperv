@@ -98,6 +98,14 @@ These were all established by measurement. Re-deriving them costs hours.
   Everything else in the module works unelevated for group members, after a
   sign-out and back in. This is why kickstart media is built as an ISO via
   IMAPI2 rather than a VHDX.
+- **Windows PowerShell 5.1 is not PowerShell 7.** The module declares
+  `#Requires -Version 5.1` and people do run it from `powershell.exe`, where
+  `RandomNumberGenerator::Fill` and `ProcessStartInfo.ArgumentList` simply do
+  not exist. Test anything using .NET APIs under `powershell.exe`, not only
+  `pwsh`.
+- **Never `catch { continue }` over a whole strategy.** Doing so turned "this
+  .NET API is missing on 5.1" into "No openssl found", which pointed the
+  investigation at the wrong machine entirely. Collect failures and report them.
 - **Substring guards.** `if ('New-LinuxPassword' -notin $s)` is always false
   when `New-LinuxPasswordHash` is present. Match whole names.
 - **Line endings are pinned in `.gitattributes`** — LF everywhere, CRLF for
