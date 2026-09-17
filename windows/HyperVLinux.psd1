@@ -33,6 +33,7 @@
         'Connect-LinuxVM'
         'Remove-LinuxVM'
         'Get-LinuxVMAddress'
+        'Get-LinuxHostAddress'
         'Start-LinuxDesktop'
         'Copy-GuestKit'
     'Start-WslApp'

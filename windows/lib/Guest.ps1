@@ -357,3 +357,38 @@ namespace LinuxOnHyperV {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 }
+
+<#
+.SYNOPSIS
+    The host's own IPv4 address on a given virtual switch.
+
+.DESCRIPTION
+    Needed so the guest can allow RDP from this machine and nothing else. The
+    guest cannot work this out for itself at first boot: on the Default Switch
+    the host is the default gateway, but on an external switch the gateway is
+    the physical router and the host is just another peer on the LAN, so a
+    guess there would firewall the host out of its own VM.
+
+    An external switch gives the host a "vEthernet (<switch>)" adapter, which
+    is the interface the guest actually sees us on.
+#>
+function Get-LinuxHostAddress {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SwitchName)
+
+    $alias = "vEthernet ($SwitchName)"
+    $address = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -ne '127.0.0.1' } |
+        Select-Object -First 1 -ExpandProperty IPAddress
+
+    if (-not $address) {
+        # An internal or private switch has no host adapter of that name, and
+        # some setups bind the address to the physical NIC instead. Fall back
+        # to the address on the interface holding the default route.
+        $address = Get-NetIPConfiguration |
+            Where-Object { $_.IPv4DefaultGateway } |
+            Select-Object -First 1 -ExpandProperty IPv4Address |
+            Select-Object -First 1 -ExpandProperty IPAddress
+    }
+    $address
+}

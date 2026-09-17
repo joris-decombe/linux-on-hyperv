@@ -74,7 +74,7 @@ for home in /home/*/ /root/; do
   restorecon -R -F "$home/.ssh"
 done
 
-bash "$root/guest/setup.sh" --desktop '@@DESKTOP@@' @@AUTOLOGIN@@
+LH_RDP_ALLOW_FROM='@@RDPALLOWFROM@@' bash "$root/guest/setup.sh" --desktop '@@DESKTOP@@' @@AUTOLOGIN@@
 status=$?
 
 # The RDP password was plaintext on the install media and is plaintext
@@ -297,6 +297,9 @@ function New-KickstartContent {
         [string]$Desktop = 'gnome',
         # Log in at GDM without a prompt. See guest/lib/prompts.sh.
         [switch]$AutoLogin,
+        # The only address allowed to reach RDP. The guest cannot determine
+        # this itself at first boot -- see Get-LinuxHostAddress.
+        [string]$RdpAllowFrom,
         # gnome-remote-desktop's system daemon refuses every client until RDP
         # credentials are set -- it is a gate in front of the daemon, separate
         # from the GDM login you then do, and not something PAM covers. So the
@@ -433,6 +436,7 @@ CREDENTIALS
                             -replace '@@REPO@@', $ProvisionRepo `
                             -replace '@@REF@@', $ProvisionRef `
                             -replace '@@DESKTOP@@', $Desktop `
+                            -replace '@@RDPALLOWFROM@@', $RdpAllowFrom `
                             -replace '@@AUTOLOGIN@@', $(if ($AutoLogin) { '--autologin' } else { '' })) -split "`r?`n")) {
                 $ks.Add($line)
             }
@@ -453,7 +457,7 @@ function Get-KickstartContentArgs {
         'KeyboardLayout', 'Locale', 'AuthorizedKey', 'PackageEnvironment',
         'ReleaseVersion', 'Live', 'InstallGuestTools', 'AllowReinstall',
         'EncryptDisk', 'EncryptionPassphrase',
-        'Provision', 'ProvisionRepo', 'ProvisionRef', 'Desktop', 'RdpPassword', 'AutoLogin'
+        'Provision', 'ProvisionRepo', 'ProvisionRef', 'Desktop', 'RdpPassword', 'AutoLogin', 'RdpAllowFrom'
     )
     $out = @{}
     foreach ($k in $keep) {
@@ -499,6 +503,7 @@ function New-KickstartIso {
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
         [switch]$AutoLogin,
+        [string]$RdpAllowFrom,
         [string]$RdpPassword,
         [switch]$Force
     )
@@ -620,6 +625,7 @@ function New-KickstartDisk {
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
         [switch]$AutoLogin,
+        [string]$RdpAllowFrom,
         [string]$RdpPassword,
         [switch]$Force
     )
@@ -996,6 +1002,7 @@ function New-KickstartVhd {
         [string]$ProvisionRef = 'main',
         [string]$Desktop = 'gnome',
         [switch]$AutoLogin,
+        [string]$RdpAllowFrom,
         [string]$RdpPassword,
         [switch]$Force
     )

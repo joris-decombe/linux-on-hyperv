@@ -395,6 +395,7 @@ function Invoke-LinuxProfile {
             ProvisionRef      = $p.install.provisionRef
             Desktop           = $p.guest.desktop
             AutoLogin         = [bool]$p.guest.autoLogin
+            RdpAllowFrom      = (Get-LinuxHostAddress -SwitchName $p.vm.switchName)
             RdpPassword       = $rdpPassword
             Force             = $true
         }
