@@ -11,6 +11,8 @@
         'New-LinuxVM'
     'New-KickstartDisk'
     'New-KickstartIso'
+    'New-KickstartVhd'
+    'New-FatVhd'
     'New-KickstartContent'
     'Add-KickstartMedia'
     'Remove-KickstartMedia'

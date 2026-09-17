@@ -260,9 +260,19 @@ function New-KickstartContent {
         $ks.Add('found=""')
         $ks.Add('for dev in /sys/block/*; do')
         $ks.Add('  name=$(basename "$dev")')
-        $ks.Add('  # Optical, loopback and ramdisks are not install targets; the')
-        $ks.Add('  # installer ISO and this kickstart disc are among them.')
-        $ks.Add('  case "$name" in sr*|loop*|ram*|fd*|dm-*) continue ;; esac')
+        $ks.Add('  # A whitelist, not a blacklist. The installer environment is full of')
+        $ks.Add('  # block devices that are not install targets, and missing one makes')
+        $ks.Add('  # this guard refuse a perfectly empty machine. zram0 taught us that:')
+        $ks.Add('  # Fedora enables zram swap, blkid reports TYPE="swap" on it, and the')
+        $ks.Add('  # install aborted before touching a disk.')
+        $ks.Add('  case "$name" in')
+        $ks.Add('    sd*|vd*|nvme*|hd*|xvd*) ;;')
+        $ks.Add('    *) continue ;;')
+        $ks.Add('  esac')
+        $ks.Add('  # Skip the kickstart volume itself, wherever it is attached.')
+        $ks.Add('  if blkid "/dev/$name"* 2>/dev/null | grep -q ''LABEL="OEMDRV"''; then')
+        $ks.Add('    continue')
+        $ks.Add('  fi')
         $ks.Add('  if blkid "/dev/$name"* 2>/dev/null | grep -qE ''TYPE="(btrfs|ext[234]|xfs|swap|LVM2_member|crypto_LUKS)"''; then')
         $ks.Add('    found="$found $name"')
         $ks.Add('  fi')
@@ -795,6 +805,65 @@ function Wait-LinuxInstall {
         Write-Note 'Leaving the kickstart media attached (-NoCleanUp).'
         return $address
     }
-    Remove-KickstartMedia -VMName $VMName -Confirm:$false
+    try {
+        Remove-KickstartMedia -VMName $VMName -Confirm:$false
+    } catch {
+        # A VHD cannot be detached from a running VM, unlike a disc. That is
+        # no longer dangerous -- the kickstart's %pre refuses to reinstall a
+        # machine that already has a filesystem -- so say so and carry on
+        # rather than failing a successful install.
+        Write-Warn 'Could not remove the kickstart media while the VM is running.'
+        Write-Note "It is harmless: the %pre guard refuses to reinstall an installed machine."
+        Write-Note "Remove it when convenient:  Stop-VM $VMName; Remove-KickstartMedia -VMName $VMName"
+    }
     $address
+}
+
+<#
+.SYNOPSIS
+    Build OEMDRV kickstart media as a FAT16 VHD. Needs no elevation.
+
+.DESCRIPTION
+    This is the default, and it exists because the two obvious alternatives
+    each fail in their own way:
+
+      ISO on a second DVD   breaks the Fedora netinst. It boots with
+                            root=live:CDLABEL=..., and with a second disc
+                            present dracut wedges at initrd-switch-root and
+                            never reaches Anaconda. Measured twice.
+      VHDX formatted by
+      Windows               needs Mount-VHD, hence Administrator.
+
+    So the filesystem is written by hand into a fixed VHD, which New-VHD
+    creates unelevated and which is just a raw image plus a 512-byte footer.
+    See lib/FatImage.ps1.
+#>
+function New-KickstartVhd {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$UserName,
+        [Parameter(Mandatory)][string]$PasswordHash,
+        [string]$FullName = $UserName,
+        [string]$Hostname = 'fedora',
+        [string]$Timezone = 'Pacific/Auckland',
+        [string]$KeyboardLayout = 'us',
+        [string]$Locale = 'en_NZ.UTF-8',
+        [string]$AuthorizedKey,
+        [string]$PackageEnvironment = '@^workstation-product-environment',
+        [string]$ReleaseVersion = '44',
+        [switch]$Live,
+        [switch]$InstallGuestTools,
+        [switch]$AllowReinstall,
+        [switch]$EncryptDisk,
+        [string]$EncryptionPassphrase,
+        [switch]$Force
+    )
+
+    $contentArgs = Get-KickstartContentArgs $PSBoundParameters
+    $content = New-KickstartContent @contentArgs
+
+    New-FatVhd -Path $Path -Label 'OEMDRV' -Files @{ 'ks.cfg' = $content } -Force:$Force | Out-Null
+    Write-Note "ks.cfg for user '$UserName' on host '$Hostname'"
+    $Path
 }

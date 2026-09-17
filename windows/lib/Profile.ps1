@@ -351,10 +351,12 @@ function Invoke-LinuxProfile {
         }
 
         $vmDir = Split-Path -Parent (Get-VMHardDiskDrive -VMName $p.vm.name | Select-Object -First 1 -ExpandProperty Path)
-        # An ISO rather than a VHDX: IMAPI2 builds it without elevation, where
-        # a VHDX needs Mount-VHD and therefore Administrator. Anaconda only
-        # cares that some volume is labeled OEMDRV.
-        $ksPath = Join-Path $vmDir "$($p.vm.name)-kickstart.iso"
+        # A FAT16 VHD written by hand, not an ISO on a second DVD: with two
+        # discs attached the Fedora netinst wedges in dracut at
+        # initrd-switch-root and never reaches Anaconda. And not a
+        # Windows-formatted VHDX either, because that needs Mount-VHD and so
+        # Administrator. See lib/FatImage.ps1.
+        $ksPath = Join-Path $vmDir "$($p.vm.name)-kickstart.vhd"
 
         $ksSplat = @{
             Path              = $ksPath
@@ -376,7 +378,7 @@ function Invoke-LinuxProfile {
         } else {
             $ksSplat.PackageEnvironment = Get-DesktopEnvironmentGroup $p.guest.desktop
         }
-        New-KickstartIso @ksSplat | Out-Null
+        New-KickstartVhd @ksSplat | Out-Null
 
         Add-KickstartMedia -VMName $p.vm.name -Path $ksPath
 
