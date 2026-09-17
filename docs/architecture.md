@@ -180,3 +180,30 @@ treating it as completion can eject the kickstart media mid-install.
 enables and which therefore cannot answer until the installed system has
 booted. Without the guest tools there is no sshd coming, and `-AddressIsEnough`
 falls back to the weaker signal deliberately rather than by accident.
+
+## Do we need a password at all?
+
+For automation, no. The SSH key does everything, and the guest kit runs over
+it. If a machine only ever needs to be driven programmatically, the account
+password could be locked outright.
+
+For a desktop, yes. GNOME's Remote Login authenticates over RDP against the
+real account through PAM, so a locked password means no graphical login --
+which is the point of the VM.
+
+So the password is not removed, it is **generated**: 24 characters from a
+cryptographic RNG, never typed, never seen unless asked for. That makes the
+install genuinely zero-touch, and it retires the last two hazards at once. A
+password nobody types cannot be mistyped into a console with unsynced Caps
+Lock. And 128 bits of entropy is not brute-forceable at any number of crypt
+rounds, which was the standing weakness of the SHA-512 hash sitting on the
+kickstart media.
+
+It is stored with `ConvertFrom-SecureString`, i.e. DPAPI: decryptable only by
+this Windows user on this machine, with inherited ACEs stripped so no other
+local account can read even the ciphertext. That is deliberately the same trust
+boundary as the VM's own disk -- anyone who can read one can read the other, so
+the credential store is not the weak link.
+
+`install.passwordMode = 'prompt'` restores the old behaviour for when the
+password has to be one you already know.

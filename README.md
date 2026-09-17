@@ -125,8 +125,13 @@ cd windows
 .\Install-FedoraUnattended.ps1 -IsoPath D:\iso\Fedora-Workstation-Live-44-1.7.x86_64.iso
 ```
 
-It prompts once for the new Linux user's password, hashes it locally, writes a
-Kickstart onto an ISO labeled `OEMDRV` -- which Anaconda looks for by name,
+**Nothing is typed.** The password is generated rather than asked for, hashed
+locally, and stored encrypted to your Windows account; read it back with
+`Get-LinuxVMCredential -VMName Fedora -AsPlainText` when you want to log in to
+the desktop. Set `install.passwordMode` to `prompt` in the profile if it has to
+be a password you already know.
+
+The command writes a Kickstart onto an ISO labeled `OEMDRV` -- which Anaconda looks for by name,
 with no kernel argument -- attaches it as a second DVD drive, and boots.
 Nothing is typed into the VM.
 
@@ -202,6 +207,9 @@ password — Remote Login has no separate RDP credentials.
 | `New-KickstartDisk` | Same as a VHDX; needs Administrator |
 | `Add-KickstartMedia` | Attach kickstart media to a VM |
 | `New-LinuxPasswordHash` | Hash a password locally for Kickstart |
+| `New-LinuxPassword` | Generate a strong random password |
+| `Get-LinuxVMCredential` | Read back a VM's generated login |
+| `Remove-LinuxVMCredential` | Forget a stored login |
 | `Add-KickstartDisk` | Attach one to an existing VM |
 | `Connect-LinuxVM` | Open the Hyper-V console (basic session, no sound) |
 | `Remove-LinuxVM` | Delete the VM, optionally its disks |

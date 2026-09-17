@@ -53,6 +53,10 @@ function Get-LinuxProfileDefault {
             locale            = 'en_NZ.UTF-8'
             authorizedKeyPath = ''
             installGuestTools = $true
+            # 'generate' makes the install genuinely zero-touch and produces a
+            # password no one can mistype and nobody can brute-force. 'prompt'
+            # asks, for when the password has to be one you already know.
+            passwordMode      = 'generate'
         }
 
         guest       = [ordered]@{
@@ -123,6 +127,10 @@ function Get-LinuxProfile {
                 $problems.Add('install.unattended with a Live ISO will not work: Live media boots to a desktop and never starts Anaconda, so the OEMDRV kickstart is never read. Use a netinst or DVD image.')
             }
         }
+    }
+
+    if ($merged.install.passwordMode -notin @('generate', 'prompt')) {
+        $problems.Add("install.passwordMode must be 'generate' or 'prompt', got '$($merged.install.passwordMode)'")
     }
 
     if ($merged.guest.desktop -notin @('gnome', 'kde', 'xfce', 'cinnamon', 'mate')) {
@@ -330,9 +338,17 @@ function Invoke-LinuxProfile {
         if ($p.install.authorizedKeyPath -and (Test-Path -LiteralPath $p.install.authorizedKeyPath)) {
             $key = (Get-Content -LiteralPath $p.install.authorizedKeyPath -Raw).Trim()
         }
-        Write-Host ''
-        Write-Host "Password for the Linux user '$($p.install.userName)':" -ForegroundColor Cyan
-        $hash = New-LinuxPasswordHash
+        if ($p.install.passwordMode -eq 'generate') {
+            # Nothing to type: the password is generated, hashed for the
+            # kickstart, and stored encrypted for whoever needs to log in.
+            $secret = New-LinuxPassword
+            $hash = New-LinuxPasswordHash -Password $secret
+            Save-LinuxVMCredential -VMName $p.vm.name -UserName $p.install.userName -Password $secret | Out-Null
+        } else {
+            Write-Host ''
+            Write-Host "Password for the Linux user '$($p.install.userName)':" -ForegroundColor Cyan
+            $hash = New-LinuxPasswordHash
+        }
 
         $vmDir = Split-Path -Parent (Get-VMHardDiskDrive -VMName $p.vm.name | Select-Object -First 1 -ExpandProperty Path)
         # An ISO rather than a VHDX: IMAPI2 builds it without elevation, where
@@ -394,6 +410,9 @@ function Invoke-LinuxProfile {
         Write-Note "Clean it up when the install finishes:  Remove-KickstartMedia -VMName $($p.vm.name)"
     }
 
+    if ($p.install.unattended -and $p.install.passwordMode -eq 'generate') {
+        Write-Note "Desktop login:       Get-LinuxVMCredential -VMName $($p.vm.name) -AsPlainText"
+    }
     Write-Note "Next, in the guest:  sudo bash guest/setup.sh --desktop $($p.guest.desktop)"
     Write-Note "Then here:           Start-LinuxDesktop -Name $($p.vm.name)"
 }
