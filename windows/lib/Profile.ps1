@@ -67,8 +67,14 @@ function Get-LinuxProfileDefault {
         }
 
         guest       = [ordered]@{
-            desktop = 'gnome'
-            rdpPort = 3389
+            desktop   = 'gnome'
+            rdpPort   = 3389
+            # Log straight in at GDM. On by default because a connection has
+            # already authenticated at the RDP credential gate by the time GDM
+            # is reached, so the second prompt asks for the same password again
+            # and gates nothing. The cost is that the Hyper-V console also
+            # lands on an unlocked desktop -- set this false if that matters.
+            autoLogin = $true
         }
 
         wsl         = [ordered]@{
@@ -388,6 +394,7 @@ function Invoke-LinuxProfile {
             ProvisionRepo     = $p.install.provisionRepo
             ProvisionRef      = $p.install.provisionRef
             Desktop           = $p.guest.desktop
+            AutoLogin         = [bool]$p.guest.autoLogin
             RdpPassword       = $rdpPassword
             Force             = $true
         }
